@@ -1,0 +1,17 @@
+# Standardkonfiguration – ausschließlich virtueller Handel.
+# Ein Echtgeld-Modus existiert nicht; "live" o. Ä. führt zu einem Fehler.
+# API-Schlüssel gehören NICHT in diese Datei (werden aktiv abgelehnt).
+
+[app]
+initial_capital = 100.0
+currency = "EUR"
+mode = "backtest"          # erlaubt: "backtest", "paper"
+db_path = "data/tradikg.sqlite"
+# Analyse-Benchmark (kein Handelsziel): 10 % Nettorendite auf das Tagesvolumen
+daily_volume_return_benchmark = 0.10
+
+[risk]
+risk_per_trade = 0.01               # max. 1 % des Kapitals Verlust bis Stop-Loss
+max_position_fraction = 0.5         # max. 50 % des Kapitals in einer Position
+daily_loss_limit = 0.10             # Handelsstopp bei -10 % ggü. Tagesbeginn
+min_reward_risk_after_costs = 1.0   # Netto-Chance/Risiko (nach Kosten) mind. 1:1
