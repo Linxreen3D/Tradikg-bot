@@ -36,7 +36,7 @@ from tradikg_bot.live.kraken.credentials import KrakenCredentials
 API_URL = "https://api.kraken.com"
 API_VERSION = "0"
 
-PUBLIC_ENDPOINTS = frozenset({"Time", "SystemStatus", "AssetPairs", "Ticker", "Depth"})
+PUBLIC_ENDPOINTS = frozenset({"Time", "SystemStatus", "AssetPairs", "Ticker", "Depth", "OHLC"})
 
 # Lesende private Endpunkte
 PRIVATE_READ_ENDPOINTS = frozenset(
