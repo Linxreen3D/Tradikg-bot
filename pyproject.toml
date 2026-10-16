@@ -54,4 +54,4 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["tradikg_bot"]
-known-local-folder = ["conftest", "helpers", "live_helpers", "market_fakes", "edge_data"]
+known-local-folder = ["conftest", "helpers", "live_helpers", "market_fakes", "edge_data", "test_paper_engine"]
