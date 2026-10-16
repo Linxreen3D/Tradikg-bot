@@ -29,7 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from tradikg_bot.live.config import LiveRiskConfig
-from tradikg_bot.live.gate import LiveApproval, check_live_gate
+from tradikg_bot.live.gate import LiveApproval, LiveTradingBlockedError, check_live_gate
 from tradikg_bot.live.gateway import ExchangeGateway
 from tradikg_bot.live.journal import ExecutionJournal, TradeRecord, TradeState
 from tradikg_bot.live.models import (
@@ -285,7 +285,9 @@ class LiveExecutor:
             raise TradingHaltedError(f"SAFE_HALT aktiv: {self.journal.halt_reason}")
         if self.journal.trades(active_only=True):
             raise TradingHaltedError("Es ist bereits eine Position aktiv (Pilot: max. eine)")
-        check_live_gate(self.gw, self.approval, pair, self.cfg.pilot_capital_eur)
+        check_live_gate(
+            self.gw, self.approval, pair, self.cfg.pilot_capital_eur, today=self._today()
+        )
         caps = self.gw.capabilities
         if not caps.native_bracket:
             self.journal.log("WARNING", "Trade verweigert: kein API-Bracket", {"pair": pair})
@@ -296,6 +298,13 @@ class LiveExecutor:
         if not plan.ok:
             raise PlanRejectedError(plan)
 
+        if self.gw.is_live and not self.journal.consume_approval(self.approval.phrase):
+            raise LiveTradingBlockedError(
+                [
+                    "Diese Einzeltrade-Freigabe wurde bereits verwendet. Jede Echtgeldorder "
+                    "braucht eine neue Freigabe; autonomer Handel ist nicht freigegeben."
+                ]
+            )
         ref = self.journal.new_client_ref()
         trade = self.journal.create_trade(
             client_ref=ref,

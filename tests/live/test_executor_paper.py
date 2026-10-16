@@ -219,3 +219,40 @@ def test_live_gateway_without_approval_is_blocked(paper, journal):
         open_(make_executor(paper, journal))
     assert any("Flag" in r for r in err.value.reasons)
     assert paper.orders == {}
+
+
+def _live_executor_with_approval(paper, journal, today):
+    from tradikg_bot.live.gate import LiveApproval, approval_phrase
+
+    paper.is_live = True  # Testattrappe: Live-Börse MIT API-Bracket
+    ex = make_executor(paper, journal)
+    ex.approval = LiveApproval(True, approval_phrase(today, 10.0, "XBTEUR"))
+    ex._today = lambda: today
+    return ex
+
+
+def test_single_trade_approval_is_consumed_and_not_reusable(paper, journal):
+    import datetime as dt
+
+    ex = _live_executor_with_approval(paper, journal, dt.date(2026, 10, 17))
+    first = open_(ex)
+    assert first.state is TradeState.PROTECTED
+    paper.move_market("XBTEUR", 64000.0, 64010.0)
+    ex.sync()
+    assert journal.get_trade(first.id).state is TradeState.CLOSED
+    paper.move_market("XBTEUR", 60000.0, 60010.0)  # gültiges Setup, nur Freigabe fehlt
+    assert ex.plan("XBTEUR", SL, TP, 10.0).ok
+    orders_before = len(paper.orders)
+    with pytest.raises(LiveTradingBlockedError, match="bereits verwendet"):
+        open_(ex)  # gleiche Freigabe -> kein zweiter Trade, kein autonomer Weiterhandel
+    assert len(paper.orders) == orders_before
+    assert len(journal.trades()) == 1
+
+
+def test_failed_precheck_does_not_consume_approval(paper, journal):
+    import datetime as dt
+
+    ex = _live_executor_with_approval(paper, journal, dt.date(2026, 10, 17))
+    with pytest.raises(PlanRejectedError):
+        ex.open_position("XBTEUR", SL, 60200.0, 10.0)  # TP zu nah -> Kostenfilter
+    assert open_(ex).state is TradeState.PROTECTED  # Freigabe noch gültig

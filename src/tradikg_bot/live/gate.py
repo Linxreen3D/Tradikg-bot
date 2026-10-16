@@ -6,14 +6,20 @@ möglich, wenn **alle** Bedingungen erfüllt sind:
 1. Kommandozeilen-Flag ``--i-understand-this-uses-real-money``
 2. Umgebungsvariable ``TRADIKG_LIVE_APPROVAL`` mit exakt dem Freigabetext für
    **heute (UTC)**, die Obergrenze und das Paar, z. B.
-   ``ECHTGELD-FREIGABE 2026-10-17 MAX 10.00 EUR XBTEUR``.
-   Die Freigabe läuft um Mitternacht UTC ab und muss täglich neu erteilt werden.
+   ``ECHTGELD-FREIGABE EINZELTRADE 2026-10-17 MAX 10.00 EUR XBTEUR``.
+   Die Freigabe gilt für **genau einen Trade**: Der Executor verbraucht sie im
+   Journal, bevor die Order gesendet wird. Eine zweite Order mit derselben Freigabe
+   wird abgelehnt. Außerdem läuft sie um Mitternacht UTC ab.
 3. Die Börse bietet über die API einen vollständigen SL/TP-Bracket (OCO) an.
 4. Der API-Key hat **keine** Auszahlungsberechtigung.
 5. Es existieren keine Margin-Positionen.
 
 Bedingungen 3 bis 5 werden vom Gate selbst geprüft und können nicht per
 Konfiguration übersprungen werden.
+
+Eine Einzeltrade-Freigabe ist **keine** Erlaubnis für autonomen Handel. Einen
+autonomen Modus gibt es nicht; er ist in ``docs/ROADMAP.md`` (Phase 4) als eigener
+Schritt mit eigener, befristeter Freigabe geplant.
 """
 
 from __future__ import annotations
@@ -34,7 +40,7 @@ class LiveTradingBlockedError(RuntimeError):
 
 
 def approval_phrase(day: dt.date, cap_eur: float, pair: str) -> str:
-    return f"ECHTGELD-FREIGABE {day.isoformat()} MAX {cap_eur:.2f} EUR {pair}"
+    return f"ECHTGELD-FREIGABE EINZELTRADE {day.isoformat()} MAX {cap_eur:.2f} EUR {pair}"
 
 
 @dataclass(frozen=True)

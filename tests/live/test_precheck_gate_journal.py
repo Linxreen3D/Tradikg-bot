@@ -158,7 +158,7 @@ def live_paper(**kw):
 
 def test_gate_requires_flag_and_date_bound_phrase():
     phrase = approval_phrase(TODAY, 10.0, "XBTEUR")
-    assert phrase == "ECHTGELD-FREIGABE 2026-10-17 MAX 10.00 EUR XBTEUR"
+    assert phrase == "ECHTGELD-FREIGABE EINZELTRADE 2026-10-17 MAX 10.00 EUR XBTEUR"
     check_live_gate(live_paper(), LiveApproval(True, phrase), "XBTEUR", 10.0, today=TODAY)
     for approval in (
         None,

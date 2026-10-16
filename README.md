@@ -19,6 +19,8 @@ Einschränkungen gelten, steht in [`docs/SPRINT_01.md`](docs/SPRINT_01.md).
 > Kraken Pro Spot (`tradikg kraken …`) ist vorbereitet, die Live-Ausführung aber
 > gesperrt. Die Kraken-Spot-API bietet keinen börsenseitigen Stop-Loss-/Take-Profit-Bracket
 > (OCO). Details, Risiken und Runbook: [`docs/KRAKEN_LIVE_PILOT.md`](docs/KRAKEN_LIVE_PILOT.md).
+> Eine Echtgeld-Freigabe gilt immer nur für **einen** Trade. Autonomer Handel ist als
+> eigene Phase mit eigener Freigabe geplant: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -72,7 +74,7 @@ die **Öffnungszeit** der Kerze.
 ## Tests und Lint
 
 ```bash
-pytest            # 177 Tests (+4 Opt-in-Tests gegen die echte Kraken-API)
+pytest            # 179 Tests (+4 Opt-in-Tests gegen die echte Kraken-API)
 ruff check src tests && ruff format --check src tests
 ```
 

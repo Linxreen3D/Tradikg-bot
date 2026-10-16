@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS trades (
     updated_at        TEXT NOT NULL,
     closed_at         TEXT
 );
+CREATE TABLE IF NOT EXISTS approvals (
+    phrase  TEXT PRIMARY KEY,
+    used_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     ts      TEXT NOT NULL,
@@ -166,6 +170,17 @@ class ExecutionJournal:
         self.log(
             "WARNING", "SAFE_HALT manuell aufgehoben", {"previous": previous, "note": operator_note}
         )
+
+    # -- Einzeltrade-Freigaben -------------------------------------------------------
+    def consume_approval(self, phrase: str) -> bool:
+        """Verbraucht eine Freigabe atomar. False, wenn sie bereits verwendet wurde."""
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO approvals(phrase, used_at) VALUES (?, ?)", (phrase, _now())
+        )
+        if cur.rowcount == 1:
+            self.log("WARNING", "Einzeltrade-Freigabe verbraucht", {"phrase": phrase})
+            return True
+        return False
 
     # -- Trades ---------------------------------------------------------------------
     def new_client_ref(self) -> int:

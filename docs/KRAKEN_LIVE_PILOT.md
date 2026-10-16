@@ -93,7 +93,7 @@ nicht verifiziert).
 | # | Anforderung | Umsetzung | Status |
 |---|---|---|---|
 | 1 | Öffentliche Marktdaten, sicherer authentifizierter Orderzugriff | `live/kraken/client.py`: HMAC-SHA512-Signatur (geprüft gegen das offizielle Kraken-Beispiel), persistente monotone Nonce, Endpunkt-Allowlist, Fehlerklassen *abgelehnt / unbekannt / nicht gesendet* | umgesetzt, nur gegen Emulator getestet |
-| 2 | Echtgeld standardmäßig aus, separate Freigabe | `live/gate.py`: CLI-Flag **und** tagesgebundener Freigabetext in `TRADIKG_LIVE_APPROVAL` (`ECHTGELD-FREIGABE <Datum> MAX 10.00 EUR <Paar>`), zusätzlich die Prüfungen auf Bracket, fehlende Auszahlungsrechte und keine Margin | umgesetzt |
+| 2 | Echtgeld standardmäßig aus, separate Freigabe | `live/gate.py`: CLI-Flag **und** tagesgebundener Freigabetext in `TRADIKG_LIVE_APPROVAL` (`ECHTGELD-FREIGABE EINZELTRADE <Datum> MAX 10.00 EUR <Paar>`). Die Freigabe gilt für **genau einen Trade** und wird beim Senden verbraucht; autonomer Handel ist nicht möglich (siehe `ROADMAP.md`, Phase 4). Zusätzlich Prüfungen auf Bracket, fehlende Auszahlungsrechte und keine Margin | umgesetzt |
 | 3 | Globale Obergrenze 10 € inkl. offener Orders/Positionen | `LiveRiskConfig` (harte Obergrenze 10 €, nicht erhöhbar). Exposure wird **aus dem Börsenzustand** berechnet: offene Kauforders + Bestände der Pilot-Assets. Orders auf fremden Paaren → Sperre | umgesetzt |
 | 4 | Kein Margin/Hebel/Futures/Short, keine Ein-/Auszahlungen | Parameter `leverage`, `reduce_only`, `settle-position` werden blockiert. Nur Kauf zum Einstieg. Nur Spot-Endpunkte. Withdraw/Deposit/WalletTransfer sind nicht erreichbar. Margin-Positionen führen zur Sperre | umgesetzt |
 | 5 | Mindestgrößen, Präzision, Liquidität, Spread, Gebühren, Slippage | `live/precheck.py`: 18 Einzelprüfungen mit Begründung, eine fehlgeschlagene Prüfung verhindert die Order | umgesetzt |
@@ -101,7 +101,7 @@ nicht verifiziert).
 | 7 | Fehlende Bestätigung, Teilausführung, Timeouts, Neustarts | Zustandsmaschine `live/executor.py` + Write-Ahead-Journal `live/journal.py` (siehe unten) | umgesetzt, im Paper-Modus getestet |
 | 8 | Tagesverlust 10 % des Pilot-Kapitals, keine Wiederauffüllung | Limit 1,00 €/UTC-Tag. Neue Trades nur, wenn der Worst Case ins Restbudget passt. Verluste senken die Obergrenze dauerhaft, Gewinne erhöhen sie nicht | umgesetzt |
 | 9 | Keine Schlüssel im Repo, keine Withdrawal-Berechtigung | Schlüssel nur aus Umgebungsvariablen oder einer Datei außerhalb jedes Git-Verzeichnisses (Modus 0600). `.gitignore`-Muster. Ein Test durchsucht alle Repo-Dateien nach Schlüsseln. Das Gate prüft per `WithdrawMethods` (erwartet *Permission denied*) | umgesetzt |
-| 10 | Erst Integrations- und Paper-Tests, keine eigenmächtige Echtgeldorder | 86 neue Tests + 4 Opt-in-Tests (Emulator über echtes HTTP, Paper-Szenarien). **Es wurde keine Echtgeldorder ausgelöst**, und es gab keinen Kontakt zu einem echten Kraken-Konto | umgesetzt |
+| 10 | Erst Integrations- und Paper-Tests, keine eigenmächtige Echtgeldorder | 88 neue Tests + 4 Opt-in-Tests (Emulator über echtes HTTP, Paper-Szenarien). **Es wurde keine Echtgeldorder ausgelöst**, und es gab keinen Kontakt zu einem echten Kraken-Konto | umgesetzt |
 
 ### Fehler- und Neustartverhalten (Anforderung 7)
 
@@ -167,10 +167,10 @@ Solange der Bracket-Blocker besteht, lautet das Ergebnis immer `NOT LIVE READY`.
 
 ```
 pytest -q            # Python 3.13.16
-177 passed, 4 skipped   (91 aus Sprint 1 + 86 neue; 4 = Opt-in-Tests gegen echte Kraken-API)
+179 passed, 4 skipped   (91 aus Sprint 1 + 88 neue; 4 = Opt-in-Tests gegen echte Kraken-API)
 
 pytest -q            # Python 3.11.17 / pandas 2.1.4
-177 passed, 4 skipped
+179 passed, 4 skipped
 
 KRAKEN_PUBLIC_INTEGRATION=1 pytest tests/live/test_kraken_public_live.py
 -> FAILED: Tunnel connection failed: 403 Forbidden (api.kraken.com durch Netzwerkrichtlinie blockiert)

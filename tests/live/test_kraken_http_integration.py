@@ -221,7 +221,7 @@ def test_live_gate_blocks_kraken_even_with_valid_approval(emulator):
 
     gw = gateway(emulator, allow_trading=True)
     today = dt.date(2026, 10, 17)
-    approval = LiveApproval(True, "ECHTGELD-FREIGABE 2026-10-17 MAX 10.00 EUR XBTEUR")
+    approval = LiveApproval(True, "ECHTGELD-FREIGABE EINZELTRADE 2026-10-17 MAX 10.00 EUR XBTEUR")
     with pytest.raises(LiveTradingBlockedError) as err:
         check_live_gate(gw, approval, "XBTEUR", 10.0, today=today)
     assert len(err.value.reasons) == 1 and "Bracket" in err.value.reasons[0]

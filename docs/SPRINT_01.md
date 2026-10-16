@@ -45,6 +45,8 @@ All checks passed! / 30 files already formatted
 
 ## Noch offen (spätere Sprints, bewusst nicht umgesetzt)
 
+Die aktuelle Planung steht in [`ROADMAP.md`](ROADMAP.md).
+
 - Automatische Auswahl zwischen Krypto und Aktien anhand der Handelsmöglichkeiten (Scanner/Ranking über mehrere Instrumente)
 - Portfolio-Backtest mit mehreren Instrumenten gleichzeitig
 - Dynamische Positionsgrößen über Fixed-Fractional hinaus (z. B. volatilitäts- oder modellbasiert)
