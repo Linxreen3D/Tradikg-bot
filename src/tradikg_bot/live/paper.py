@@ -12,12 +12,19 @@ zu prüfen. Das ist eine Testattrappe, keine Absicherung für den Echtbetrieb.
 
 Fehlerinjektion über ``fail_next``:
 ``"reject"``, ``"timeout_before_accept"``, ``"timeout_after_accept"``.
+
+Für den autonomen Paper-Kreislauf wird ``process_bar`` verwendet: SL/TP werden
+anhand von Open/High/Low der Kerze ausgelöst (Kurslücke -> Ausführung zum
+Eröffnungskurs; SL und TP in derselben Kerze -> konservativ Stop-Loss). Der
+komplette Zustand lässt sich speichern und laden (``to_state``/``from_state``),
+damit ein Neustart die simulierte Börse nicht verliert.
 """
 
 from __future__ import annotations
 
-import itertools
-from dataclasses import dataclass, field, replace
+import math
+from dataclasses import asdict, dataclass, field, replace
+from typing import Any
 
 from tradikg_bot.live.models import (
     Balance,
@@ -44,6 +51,23 @@ PAPER_RULES = {
 """Beispielwerte für Tests – im Live-Betrieb werden die Regeln immer von Kraken geladen."""
 
 
+def generic_rules(altname: str, price: float, base: str | None = None) -> PairRules:
+    """Plausible Handelsregeln für Instrumente ohne Börsenregeln (z. B. synthetische Daten)."""
+    decimals = max(1, min(8, 6 - int(math.floor(math.log10(max(price, 1e-8))))))
+    tick = 10.0**-decimals
+    return PairRules(
+        altname,
+        altname,
+        base or altname.removesuffix("EUR"),
+        "ZEUR",
+        8,
+        decimals,
+        tick,
+        ordermin=round(5.0 / price, 8) or 1e-8,
+        costmin=0.5,
+    )
+
+
 @dataclass
 class PaperExchange:
     rules: dict[str, PairRules] = field(default_factory=lambda: dict(PAPER_RULES))
@@ -61,7 +85,7 @@ class PaperExchange:
     orders: dict[str, ExchangeOrder] = field(default_factory=dict)
     name: str = "paper"
     is_live: bool = False
-    _ids: itertools.count = field(default_factory=lambda: itertools.count(1))
+    next_id: int = 1
 
     # -- Fähigkeiten ------------------------------------------------------------------
     @property
@@ -119,7 +143,9 @@ class PaperExchange:
 
     # -- Orders -------------------------------------------------------------------------
     def _new_id(self) -> str:
-        return f"PAPER-{next(self._ids):06d}"
+        txid = f"PAPER-{self.next_id:06d}"
+        self.next_id += 1
+        return txid
 
     def submit_bracket(self, request: BracketRequest) -> str:
         if not self.native_bracket:
@@ -242,3 +268,88 @@ class PaperExchange:
                 for sib in legs:
                     if sib is not leg and sib.parent_txid == leg.parent_txid:
                         sib.status = OrderStatus.CANCELED
+
+    # -- Kerzenbasierte Ausführung (autonomer Paper-Kreislauf) ----------------------------
+    def process_bar(self, pair: str, open_: float, high: float, low: float, close: float) -> int:
+        """Löst SL/TP offener Schutzorders anhand einer Kerze aus. Gibt Anzahl Exits zurück."""
+        rules = self._rules_for(pair)
+        legs = [
+            o
+            for o in self.orders.values()
+            if o.status is OrderStatus.OPEN and o.pair == rules.altname and o.role
+        ]
+        parents = {o.parent_txid for o in legs}
+        exits = 0
+        for parent in parents:
+            group = [o for o in legs if o.parent_txid == parent and o.status is OrderStatus.OPEN]
+            sl = next((o for o in group if o.role is LegRole.STOP_LOSS), None)
+            tp = next((o for o in group if o.role is LegRole.TAKE_PROFIT), None)
+            fill: tuple[ExchangeOrder, float, float] | None = None
+            slip = 1 - self.stop_slippage_bps * 1e-4
+            if sl is not None and open_ <= sl.price:
+                fill = (sl, open_ * slip, self.fees.taker)  # Kurslücke unter den Stop
+            elif tp is not None and open_ >= tp.price:
+                fill = (tp, open_, self.fees.maker)  # Kurslücke über das Ziel
+            elif sl is not None and low <= sl.price:
+                fill = (sl, sl.price * slip, self.fees.taker)  # konservativ: Stop zuerst
+            elif tp is not None and high >= tp.price:
+                fill = (tp, tp.price, self.fees.maker)
+            if fill is None:
+                continue
+            leg, px, fee_rate = fill
+            leg.status, leg.filled, leg.avg_price = OrderStatus.CLOSED, leg.volume, px
+            leg.fee = leg.volume * px * fee_rate
+            self.balances_[rules.base] = self.balances_.get(rules.base, 0.0) - leg.volume
+            self.balances_[rules.quote] += leg.volume * px - leg.fee
+            exits += 1
+            if not self.oco_broken:
+                for sib in group:
+                    if sib is not leg:
+                        sib.status = OrderStatus.CANCELED
+        self.set_book(pair, close * (1 - 1e-4), close * (1 + 1e-4))
+        return exits
+
+    # -- Persistenz -----------------------------------------------------------------------
+    def to_state(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "rules": {k: asdict(v) for k, v in self.rules.items()},
+            "fees": asdict(self.fees),
+            "balances": dict(self.balances_),
+            "native_bracket": self.native_bracket,
+            "stop_slippage_bps": self.stop_slippage_bps,
+            "next_id": self.next_id,
+            "orders": [
+                {
+                    **asdict(o),
+                    "side": str(o.side),
+                    "status": str(o.status),
+                    "role": str(o.role) if o.role else None,
+                }
+                for o in self.orders.values()
+            ],
+        }
+
+    @classmethod
+    def from_state(cls, state: dict[str, Any]) -> PaperExchange:
+        if state.get("version") != 1:
+            raise ValueError("Unbekannte oder beschädigte Paper-Börsen-Zustandsdatei")
+        ex = cls(
+            rules={k: PairRules(**v) for k, v in state["rules"].items()},
+            fees=FeeRates(**state["fees"]),
+            balances_=dict(state["balances"]),
+            native_bracket=bool(state["native_bracket"]),
+            stop_slippage_bps=float(state["stop_slippage_bps"]),
+            next_id=int(state["next_id"]),
+        )
+        for raw in state["orders"]:
+            order = ExchangeOrder(
+                **{
+                    **raw,
+                    "side": OrderSide(raw["side"]),
+                    "status": OrderStatus(raw["status"]),
+                    "role": LegRole(raw["role"]) if raw["role"] else None,
+                }
+            )
+            ex.orders[order.txid] = order
+        return ex

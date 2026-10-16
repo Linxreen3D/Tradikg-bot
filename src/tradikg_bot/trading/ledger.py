@@ -94,7 +94,7 @@ class CapitalLedger:
             raise ValueError("tax_rate muss in [0, 1) liegen")
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(path), isolation_level=None)
+        self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(_SCHEMA)
         stored = self._meta("initial_capital")
