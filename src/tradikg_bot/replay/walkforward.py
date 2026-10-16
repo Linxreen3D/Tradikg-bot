@@ -571,6 +571,7 @@ class HistoricalReplay:
             research = self.research.get(self.plan.research_cutoff(b))
             last_visible = idx[nxt - 1]
             visible = {s: df[df.index <= last_visible] for s, df in data.items()}
+            visible = {s: df for s, df in visible.items() if not df.empty}  # spätere Listings
             if variant.random_entries:
                 engine.source = RandomEntrySignals(visible, seed=cfg.seed)
             else:
