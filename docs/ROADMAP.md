@@ -7,7 +7,8 @@ Freigabe gilt nur für die Phase und den Umfang, für den sie erteilt wurde.
 |---|---|---|
 | 1 | Backtesting-Fundament (Daten, Kosten, Baseline, Engine) | umgesetzt (PR #1) |
 | 2 | Kraken-Spot-Execution-Komponente, fail-closed | umgesetzt, **NOT LIVE READY** (PR #2) |
-| 2.5 | Research-, ML- und autonome **Paper**-Plattform, Dashboard, macOS-Betrieb | umgesetzt (dieser PR) |
+| 2.5 | Research-, ML- und autonome **Paper**-Plattform, Dashboard, macOS-Betrieb | umgesetzt (PR #3) |
+| **2.6** | **Historical Market Replay mit Walk-Forward-Tests** (vor weiteren ML-Modellen) | Pipeline umgesetzt; Lauf auf echten Daten steht aus (Mac) |
 | 3 | Einzelner, manuell überwachter Echtgeld-Testtrade (max. 10 €) | blockiert: kein API-Bracket bei Kraken Spot |
 | 4 | Autonomer Handelskreislauf **mit Echtgeld** | Logik im Paper-Modus umgesetzt; Echtgeld **nicht freigegeben, nicht aktivierbar** |
 | 5 | Langfrist-Investments mit echten Käufen | Grundgerüst (Datenmodelle, Analysen); Käufe nicht implementiert |
@@ -40,6 +41,22 @@ Außerdem: Market-Data-Engine, Scanner, sechs Strategiefamilien, Research mit
 Walk-Forward und Baselines, Regime-Erkennung, ML mit Champion/Challenger,
 Nachanalyse und Tagesberichte, Dashboard, macOS-Skripte und launchd.
 
+## Phase 2.6: Historical Replay (Priorität vor weiterem ML)
+
+Eine lauffähige Replay-Pipeline hat Vorrang vor zusätzlichen, komplexeren ML-Modellen:
+Erst wenn sich ein Ergebnis über mehrere historische Zeiträume, einen unangetasteten
+Holdout und Stresstests hält, lohnt sich weitere Modellierung. Details:
+[`HISTORICAL_REPLAY.md`](HISTORICAL_REPLAY.md).
+
+- [x] Datenimport: Kraken-OHLC (720 Kerzen), Kraken-OHLCVT-Download, ccxt (gekennzeichnet)
+- [x] Replay nur mit bis dahin bekannten Daten, gleiche Paper-Engine
+- [x] Walk-Forward mit Research je Cutoff (Train/Validation/Test), unangetasteter Holdout
+- [x] 10 €, 10 € Pilotprofil, 100 €, 1.000 €; Ledger 33/33/34 je Szenario
+- [x] Baselines und Robustheit (Gebühren ×2, Ausführung, Volatilität, TP-zuerst-Obergrenze)
+- [x] Verteilung über rollierende Fenster inkl. negativer Ergebnisse; Dashboard-Bereich
+- [ ] Auf dem Mac mit echten Kraken-Daten (OHLCVT-Download, mehrere Jahre) ausführen
+- [ ] Erst danach: weitere ML-Modelle, nur wenn sie im Replay belastbar besser sind
+
 ## Voraussetzungen für Phase 3 (Einzeltrade live)
 
 - [ ] Broker mit dokumentiertem, börsenseitigem SL/TP-Bracket (OCO) über die API.
@@ -56,6 +73,8 @@ Nachanalyse und Tagesberichte, Dashboard, macOS-Skripte und launchd.
 
 - [ ] Phase 3 erfolgreich: mehrere Einzeltrades mit bestätigtem Schutz, sauberem
       Abgleich und korrekter Netto-Abrechnung.
+- [ ] Historical Replay auf echten Daten mit Gesamturteil „belastbar“ (Holdout erst danach
+      einmal ausgewertet).
 - [ ] Mindestens eine Strategie mit Urteil **„bestätigt“** auf echten Marktdaten
       (nicht synthetisch), anschließend mehrere Wochen Paper-Betrieb mit Live-Daten
       ohne ungeklärten SAFE_HALT und mit plausibler Kalibrierung.

@@ -42,6 +42,7 @@ Simulationsuhr), falsche Tageszuordnung im Replay, inkonsistente Kostenannahmen.
 | 11 | Trade Journal | `live/journal.py`, `trading/store.py` | umgesetzt (Write-Ahead, Neustart) |
 | 12 | Strategy Research Engine | `research/` | umgesetzt (Walk-Forward, Baselines, Berichte) |
 | 13 | Backtesting Engine | `backtest/` (Einzel-Asset), `trading/runner.replay` (Multi-Asset) | umgesetzt |
+| 13a | Historical Replay | `replay/` (Walk-Forward, Holdout, Fenster, Baselines, Stresstests) | umgesetzt (siehe `HISTORICAL_REPLAY.md`) |
 | 14 | Live Paper-Trading Engine | `trading/engine.py`, `service/paper_service.py` | umgesetzt |
 | 15 | Analytics Dashboard | `dashboard/` | umgesetzt (Streamlit, nur lokal, nur lesend) |
 | 16 | macOS Service Manager | `service/ops.py`, `scripts/`, `deploy/launchd/` | umgesetzt (ungetestet auf echter macOS-Hardware) |
@@ -110,7 +111,8 @@ Kraken OHLC/Ticker ──► Market Data Engine ──► SQLite-Cache (market.s
   data/models.sqlite    Modellregister, Prognosen + Ergebnisse
   data/paper/paper.sqlite  Paper-Journal, Ledger, Absichten, Equity, Analysen
   data/paper/KILL_SWITCH   Not-Aus (Datei vorhanden = keine neuen Einstiege)
-  data/replays/…        historische Replays (getrennt vom laufenden Paper-Konto)
+  data/replays.sqlite   Historical-Replay-Läufe, Szenarien, Equity, Trades, Holdout-Zähler
+  data/replays/…        Engine-Datenbanken je Replay-Szenario (getrennt vom Paper-Konto)
   logs/tradikg.jsonl    strukturierte Logs (Schlüssel geschwärzt)
   backups/<Zeitstempel>/ Datenbank-Backups
   run/status.json, run/paper.lock

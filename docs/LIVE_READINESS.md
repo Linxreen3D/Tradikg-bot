@@ -78,11 +78,13 @@ implementieren; Vorab-Prüfungen, Journal, Abgleich und SAFE_HALT bleiben gleich
 1. `scripts/check_environment.sh` und `tradikg doctor --network` ohne Fehler.
 2. Mindestens 4 Wochen Paper-Dauerbetrieb mit echten Kraken-Daten. Danach
    Tagesberichte, Kalibrierung und SAFE_HALT-Historie im Dashboard prüfen.
-3. Research auf echten Daten: mindestens eine Strategie „bestätigt“; das Ergebnis im
+3. Historical Replay auf echten Daten (`tradikg replay run`): Gesamturteil „belastbar“,
+   Holdout dabei erstmals ausgewertet.
+4. Research auf echten Daten: mindestens eine Strategie „bestätigt“; das Ergebnis im
    Bericht nachvollziehen (Testdaten, Kosten ×2, Zufalls-Baseline, Walk-Forward).
-4. Broker mit API-Bracket gewählt, Gateway implementiert, mit Test-/Validate-Endpunkten
+5. Broker mit API-Bracket gewählt, Gateway implementiert, mit Test-/Validate-Endpunkten
    geprüft; Mindestgrößen und Gebühren live abgefragt.
-5. Sub-Konto mit maximal 10 €, API-Key **ohne** Auszahlungsrechte.
-6. Not-Aus, SAFE_HALT und `reset-halt` einmal bewusst ausgelöst und geprüft.
-7. Ein einzelner Testtrade nur mit deiner ausdrücklichen Einzeltrade-Freigabe; danach
+6. Sub-Konto mit maximal 10 €, API-Key **ohne** Auszahlungsrechte.
+7. Not-Aus, SAFE_HALT und `reset-halt` einmal bewusst ausgelöst und geprüft.
+8. Ein einzelner Testtrade nur mit deiner ausdrücklichen Einzeltrade-Freigabe; danach
    Abgleich von Journal, Broker-Kontoauszug und Ledger.

@@ -34,6 +34,8 @@ scripts/setup_mac.sh                         # venv, Abhängigkeiten, ~/.tradikg
 source .venv/bin/activate
 tradikg research run --source kraken         # Strategien auf echten Kraken-Daten prüfen
 tradikg research report
+tradikg data fetch-kraken --timeframe 1d     # Tageskerzen (oder data import-kraken <ZIP>)
+tradikg replay run --no-holdout              # Historical Replay mit Walk-Forward
 scripts/start_bot.sh                         # autonomer Paper-Dauerbetrieb
 scripts/start_dashboard.sh                   # http://127.0.0.1:8501
 ```
@@ -52,6 +54,8 @@ tradikg init | doctor [--network] | backup
 tradikg research run --source kraken|cache|synthetic [--symbols XBTEUR,ETHEUR] [--timeframe 1h]
 tradikg research report [--run-id N]
 tradikg ml train --source cache
+tradikg data fetch-kraken | import-kraken <ZIP> | fetch-ccxt | coverage   # historische Daten
+tradikg replay run [--no-holdout] [--quick] [--rules kraken] | report    # Walk-Forward-Replay
 tradikg paper run [--once] | replay --source cache | status | report [--day YYYY-MM-DD]
 tradikg paper kill [--release] | reset-halt --note "Prüfergebnis"
 tradikg kraken market-check | preflight | paper-trade | status   # Kraken-Pilot (Live gesperrt)
@@ -61,7 +65,7 @@ tradikg sample-data | import-csv | fetch | backtest | runs        # Sprint-1-Bac
 ## Tests und Lint
 
 ```bash
-scripts/run_tests.sh      # ruff + pytest (291 Tests, 4 Opt-in-Tests gegen die echte Kraken-API)
+scripts/run_tests.sh      # ruff + pytest (309 Tests, 4 Opt-in-Tests gegen die echte Kraken-API)
 KRAKEN_PUBLIC_INTEGRATION=1 pytest tests/live/test_kraken_public_live.py   # mit Internet
 ```
 
@@ -78,17 +82,19 @@ src/tradikg_bot/
 ├── strategies/    Strategiefamilien (Trend, Momentum, Mean Reversion, Volatilität, Volumen, Struktur)
 ├── research/      Walk-Forward-Research, Baselines, Kosten-Sensitivität, Berichte
 ├── ml/            Triple-Barrier-Datensatz, Modelle, Kalibrierung, Register, Champion/Challenger
+├── replay/        Historical Replay: Walk-Forward, Holdout, Fenster, Baselines, Stresstests
 ├── trading/       autonomer Paper-Kreislauf, Signal-Ranking, Ledger 33/33/34, Nachanalyse
 ├── live/          Executor, Journal, Gate, Paper-Börse, Kraken-Client/Gateway (Live gesperrt)
 ├── invest/        Langfrist-Portfolio (Grundgerüst, keine Käufe)
 ├── dashboard/     Streamlit-App (nur lokal, nur lesend)
 ├── service/       Paper-Dauerbetrieb, Instanzsperre, Logs, Backups
 ├── backtest/, data/, costs/, risk/, storage/   Sprint-1-Fundament
-└── cli.py, cli_platform.py
+└── cli.py, cli_platform.py, cli_replay.py
 scripts/           macOS-Skripte        deploy/launchd/   launchd-Vorlagen
 ```
 
-Ausführlich: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Ausführlich: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Historical Replay:
+[`docs/HISTORICAL_REPLAY.md`](docs/HISTORICAL_REPLAY.md).
 
 ### Schutz vor Look-Ahead-Bias
 
