@@ -14,7 +14,7 @@ from tradikg_bot.domain import ExitReason
 from tradikg_bot.risk import SkipReason
 from tradikg_bot.strategies import SmaCrossoverStrategy
 
-from conftest import ZERO_FEES, ScriptedStrategy, make_bars
+from helpers import ZERO_FEES, ScriptedStrategy, make_bars
 
 FLAT = (100.0, 101.0, 99.0, 100.0)
 HELD = (102.0, 103.0, 101.0, 102.0)

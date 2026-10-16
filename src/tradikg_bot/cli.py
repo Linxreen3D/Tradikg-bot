@@ -1,6 +1,8 @@
 """Kommandozeile: ``tradikg <befehl>`` bzw. ``python -m tradikg_bot <befehl>``.
 
-Es gibt bewusst keinen Befehl zum Platzieren echter Orders.
+Backtest-Befehle handeln ausschließlich virtuell. Die Kraken-Pilot-Befehle
+(``tradikg kraken …``) sind in ``tradikg_bot/live/cli_kraken.py`` beschrieben;
+Echtgeldorders sind dort mehrfach gesperrt.
 """
 
 from __future__ import annotations
@@ -223,12 +225,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("runs", help="Gespeicherte Backtest-Läufe anzeigen")
     p.set_defaults(func=cmd_runs)
+
+    from tradikg_bot.live.cli_kraken import register
+
+    register(sub)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "kraken":
+        return int(args.func(args))
     cfg = _load_config(args.config)
     return int(args.func(args, cfg))
 

@@ -8,7 +8,7 @@ from tradikg_bot.indicators import atr, ema, rsi, sma
 from tradikg_bot.strategies import SmaCrossoverParams, SmaCrossoverStrategy
 from tradikg_bot.strategies.base import Strategy, empty_signals
 
-from conftest import make_bars
+from helpers import make_bars
 
 
 class PeekingStrategy(Strategy):
