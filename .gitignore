@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
+
+# Lokale Daten & Ergebnisse (werden nicht versioniert)
+data/
+reports/
+*.sqlite
+*.sqlite3
+*.db
+
+# Niemals Schlüssel/Secrets committen
+.env
+*.key
+secrets*
