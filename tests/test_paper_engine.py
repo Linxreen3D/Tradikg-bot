@@ -354,3 +354,27 @@ def test_daily_report_written_on_day_change(tmp_path):
     replay(engine, {"AAAEUR": up})
     row = engine.store.conn.execute("SELECT day, markdown FROM daily_reports").fetchone()
     assert row and "Tagesbericht" in row[1]
+
+
+def test_same_bar_stop_and_target_is_flagged_and_conservative(tmp_path):
+    data = flat(30)
+    wide = data.copy()
+    wide.loc[wide.index[17], ["high", "low"]] = [120.0, 80.0]  # SL und TP in einer Kerze
+    engine = make_engine(tmp_path, source=ScriptedSource({data.index[15]}))
+    replay(engine, {"AAAEUR": wide})
+    trade = engine.journal.trades()[0]
+    assert trade.exit_reason == "stop_loss"  # konservativ
+    analysis = engine.store.analyses()[0]
+    assert analysis["intrabar_ambiguous"] is True
+    assert any("Reihenfolge unbekannt" in f for f in analysis["findings"])
+
+
+def test_take_profit_first_is_only_an_explicit_upper_bound(tmp_path):
+    data = flat(30)
+    wide = data.copy()
+    wide.loc[wide.index[17], ["high", "low"]] = [120.0, 80.0]
+    engine = make_engine(tmp_path, source=ScriptedSource({data.index[15]}))
+    engine.gw.ambiguous_policy = "take_profit_first"
+    replay(engine, {"AAAEUR": wide})
+    assert engine.journal.trades()[0].exit_reason == "take_profit"
+    assert engine.store.analyses()[0]["intrabar_ambiguous"] is True

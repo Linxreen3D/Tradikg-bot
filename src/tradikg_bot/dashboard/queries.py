@@ -311,3 +311,86 @@ def settings(cfg: PlatformConfig) -> dict[str, Any]:
         "home": str(cfg.home),
         "local_llm_enabled": cfg.local_llm_enabled,
     }
+
+
+# -- Historical Replay -----------------------------------------------------------------------
+def replay_runs(cfg: PlatformConfig) -> pd.DataFrame:
+    return _df(
+        cfg.replay_db,
+        "SELECT id, created_at, data_source, synthetic, timeframe, symbols, holdout_evaluated, "
+        "holdout_count FROM replay_runs ORDER BY id DESC",
+    )
+
+
+def replay_run(cfg: PlatformConfig, run_id: int) -> dict[str, Any] | None:
+    df = _df(
+        cfg.replay_db,
+        "SELECT id, created_at, data_source, synthetic, timeframe, symbols, plan_json, "
+        "research_json, holdout_evaluated, holdout_count, report_md FROM replay_runs WHERE id = ?",
+        (run_id,),
+    )
+    if df.empty:
+        return None
+    row = df.iloc[0].to_dict()
+    row["symbols"] = json.loads(row["symbols"])
+    row["plan"] = json.loads(row.pop("plan_json"))
+    row["research"] = json.loads(row.pop("research_json"))
+    row["synthetic"] = bool(row["synthetic"])
+    return row
+
+
+def replay_scenarios(cfg: PlatformConfig, run_id: int) -> pd.DataFrame:
+    df = _df(cfg.replay_db, "SELECT * FROM replay_scenarios WHERE run_id = ?", (run_id,))
+    for col in ("start", "end"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], utc=True, format="ISO8601")
+    return df
+
+
+def replay_equity(cfg: PlatformConfig, run_id: int, scenario_ids: list[str]) -> pd.DataFrame:
+    if not scenario_ids:
+        return pd.DataFrame()
+    marks = ", ".join("?" * len(scenario_ids))
+    df = _df(
+        cfg.replay_db,
+        f"SELECT * FROM replay_equity WHERE run_id = ? AND scenario_id IN ({marks}) ORDER BY ts",
+        (run_id, *scenario_ids),
+    )
+    if not df.empty:
+        df["ts"] = pd.to_datetime(df["ts"], utc=True, format="ISO8601")
+    return df
+
+
+def replay_trades(cfg: PlatformConfig, run_id: int, scenario_ids: list[str]) -> pd.DataFrame:
+    if not scenario_ids:
+        return pd.DataFrame()
+    marks = ", ".join("?" * len(scenario_ids))
+    df = _df(
+        cfg.replay_db,
+        f"SELECT scenario_id, payload FROM replay_trades WHERE run_id = ? AND scenario_id IN "
+        f"({marks}) ORDER BY scenario_id, trade_id",
+        (run_id, *scenario_ids),
+    )
+    if df.empty:
+        return df
+    pairs = zip(df["scenario_id"], df["payload"], strict=True)
+    rows = [{"scenario_id": s, **json.loads(p)} for s, p in pairs]
+    return pd.DataFrame(rows)
+
+
+def replay_strategy_stats(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades.empty or "strategy" not in trades.columns:
+        return pd.DataFrame()
+    g = trades.groupby("strategy")
+    out = pd.DataFrame(
+        {
+            "trades": g.size(),
+            "trefferquote": g["net_pnl_eur"].apply(lambda s: float((s > 0).mean())),
+            "netto_eur": g["net_pnl_eur"].sum(),
+            "gebuehren_eur": g["fees_eur"].sum(),
+            "sl_tp_gleiche_kerze": g["intrabar_ambiguous"].sum()
+            if "intrabar_ambiguous" in trades.columns
+            else 0,
+        }
+    )
+    return out.reset_index().sort_values("trades", ascending=False)

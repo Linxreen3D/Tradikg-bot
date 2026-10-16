@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from tradikg_bot.dashboard import queries as q
+from tradikg_bot.dashboard import replay_view
 from tradikg_bot.platform_config import PlatformConfig
 
 SERIES = "#2a78d6"  # Referenzfarbe Slot 1 (einreihige Diagramme)
@@ -35,7 +36,15 @@ def main() -> None:
         st.rerun()
 
     tabs = st.tabs(
-        ["Übersicht", "Trading", "Analytics", "AI Research", "System Health", "Einstellungen"]
+        [
+            "Übersicht",
+            "Trading",
+            "Analytics",
+            "Historical Replay",
+            "AI Research",
+            "System Health",
+            "Einstellungen",
+        ]
     )
     b = q.balances(cfg)
     windows = q.pnl_windows(cfg)
@@ -156,6 +165,9 @@ def main() -> None:
             st.markdown(reports.set_index("day").loc[day, "markdown"])
 
     with tabs[3]:
+        replay_view.render(cfg)
+
+    with tabs[4]:
         st.subheader("Strategie-Ranking (letzter Research-Lauf, Testdaten)")
         st.caption("„bestätigt“ gilt nur für die untersuchten Daten – keine Gewinngarantie.")
         st.dataframe(q.research_results(cfg), use_container_width=True, hide_index=True)
@@ -167,7 +179,7 @@ def main() -> None:
         st.subheader("Prognosekalibrierung (vorhergesagt vs. beobachtet)")
         st.dataframe(q.calibration(cfg), use_container_width=True, hide_index=True)
 
-    with tabs[4]:
+    with tabs[5]:
         status = h["status"]
         c = st.columns(4)
         c[0].metric("Letzter Durchgang", status.get("updated_at", "–"))
@@ -183,7 +195,7 @@ def main() -> None:
         st.subheader("Fehler- und Warnprotokoll")
         st.dataframe(h["errors"], use_container_width=True, hide_index=True)
 
-    with tabs[5]:
+    with tabs[6]:
         st.subheader("Einstellungen (nur Anzeige)")
         st.json(q.settings(cfg))
         st.info(

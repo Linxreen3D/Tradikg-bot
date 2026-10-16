@@ -37,6 +37,10 @@ tradikg ml train --source cache --timeframe 1h
 # c) Historisches Replay mit denselben Regeln wie im Dauerbetrieb
 tradikg paper replay --source cache --timeframe 1h
 
+# c2) Historical Replay mit Walk-Forward (siehe docs/HISTORICAL_REPLAY.md)
+tradikg data fetch-kraken --timeframe 1d    # 720 Tageskerzen; besser: data import-kraken <ZIP>
+tradikg replay run --no-holdout             # Holdout erst ganz am Ende einmal auswerten
+
 # d) Paper-Dauerbetrieb starten und Dashboard öffnen
 scripts/start_bot.sh
 scripts/start_dashboard.sh          # http://127.0.0.1:8501

@@ -88,3 +88,46 @@ def test_streamlit_app_renders(populated, monkeypatch):
     expected = f"{engine.ledger.balances().trading_balance:,.2f} €"
     assert labels["Trading-Balance"] == expected
     assert any("System bereit" in s.value for s in at.success)
+
+
+def test_historical_replay_tab_shows_what_100_eur_became(tmp_path, monkeypatch):
+    testing = pytest.importorskip("streamlit.testing.v1")
+    from tradikg_bot.replay.data import synthetic_market_phases
+    from tradikg_bot.replay.report import render_replay_report
+    from tradikg_bot.replay.store import ReplayStore, holdout_fingerprint
+    from tradikg_bot.replay.walkforward import HistoricalReplay, ReplayConfig
+
+    cfg = PlatformConfig(home=tmp_path / "home")
+    cfg.ensure_dirs()
+    data = {"AAAEUR": synthetic_market_phases(n=320, seed=2)}
+    rcfg = ReplayConfig(
+        research_random_runs=3,
+        strategies=("mean_reversion",),
+        min_history_bars=100,
+        variants=("bot", "random"),
+        folds=2,
+    )
+    replay = HistoricalReplay(data, tmp_path / "work", rcfg, "synthetisch", True)
+    result = replay.run()
+    store = ReplayStore(cfg.replay_db)
+    fp = holdout_fingerprint(replay.data, replay.plan, "1d")
+    run_id = store.save(result, render_replay_report(result, 1), fp, store.register_holdout(fp))
+    store.close()
+    assert not q.replay_runs(cfg).empty
+    sc = q.replay_scenarios(cfg, run_id)
+    assert set(sc["period"]) == {"walk_forward", "holdout", "window"}
+
+    monkeypatch.setenv("TRADIKG_HOME", str(cfg.home))
+    at = testing.AppTest.from_file(str(APP), default_timeout=60).run()
+    assert not at.exception
+    labels = {m.label: m.value for m in at.metric}
+    bot = sc[(sc["scenario_id"] == "walk_forward-bot-eur100")].iloc[0]
+    assert labels["Bot – Endwert"] == f"{bot['final_equity']:,.2f} €"
+    assert "Schlechtestes Fenster" in labels and "Fenster mit Verlust" in labels
+    assert any("Synthetische Daten" in w.value for w in at.warning)
+
+
+def test_replay_queries_on_fresh_install_are_empty(tmp_path):
+    cfg = PlatformConfig(home=tmp_path / "fresh")
+    assert q.replay_runs(cfg).empty and q.replay_run(cfg, 1) is None
+    assert q.replay_scenarios(cfg, 1).empty and q.replay_strategy_stats(pd.DataFrame()).empty

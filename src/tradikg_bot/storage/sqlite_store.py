@@ -218,6 +218,13 @@ class SQLiteStore:
         frame.index = canonical_index(pd.Index(frame.pop("ts").astype("int64")))
         return frame.astype("float64")
 
+    def bar_sources(self, symbol: str, timeframe: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT source FROM bars WHERE symbol = ? AND timeframe = ? ORDER BY source",
+            (symbol, timeframe),
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def list_series(self) -> pd.DataFrame:
         rows = self._conn.execute(
             """SELECT symbol, timeframe, COUNT(*), MIN(ts), MAX(ts)

@@ -148,6 +148,7 @@ class ExchangeOrder:
     price: float | None = None  # Limit- bzw. Triggerpreis
     parent_txid: str | None = None
     role: LegRole | None = None
+    ambiguous: bool = False  # Paper: SL und TP in derselben Kerze, Reihenfolge unbekannt
 
 
 @dataclass(frozen=True)

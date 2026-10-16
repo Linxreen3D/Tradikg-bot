@@ -63,6 +63,19 @@ und launchd, Dashboard auf dem Mac, Strategien auf echten Marktdaten. Details:
 - Es gibt keine Renditeversprechen. „bestätigt“ heißt nur: auf ungesehenen Testdaten
   nach Kosten positiv und besser als Zufall.
 
+## Nachtrag: Historical Market Replay (Phase 2.6)
+
+Branch `feature/historical-replay` (baut auf diesem PR auf). Walk-Forward-Replay mit
+derselben Paper-Engine, Research je Entscheidungszeitpunkt nur auf Vergangenheitsdaten,
+unangetastetem Holdout (Auswertungen gezählt), rollierenden Fenstern, Kapitalszenarien
+10 €/100 €/1.000 €, Baselines und Stresstests; Bericht „Was wäre aus 100 € geworden?“
+und Dashboard-Bereich. Details und Grenzen: `HISTORICAL_REPLAY.md`.
+
+Pipeline-Lauf auf **synthetischen** Daten (3 Assets, 730 Tageskerzen) – sagt nichts
+über echte Märkte: 100 € → 99,77 € im Walk-Forward, 100,50 € im Holdout, 5 Fenster
+zwischen 99,18 € und 100,39 €; Gesamturteil „nicht belastbar“ (u. a. synthetische
+Daten, nur 6 Trades, negativ bei Gebühren ×2, nicht besser als Zufallseinstiege).
+
 ## Offene Funktionen
 
 Siehe `ROADMAP.md` (Abschnitt „Offen“): Aktienbroker/Echtzeit-Aktiendaten,
