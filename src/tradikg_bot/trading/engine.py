@@ -347,6 +347,16 @@ class PaperTradingEngine:
             meta = self.store.trade_meta(t.id) or {}
             oos = self._oos_regime_expectancy(meta.get("strategy"), t.pair, meta.get("regime"))
             analysis = analyze_trade(t, meta, self.history(t.pair), oos)
+            try:
+                legs = self.gw.orders_by_client_ref(t.client_ref)
+            except Exception:
+                legs = []
+            analysis["intrabar_ambiguous"] = any(o.ambiguous for o in legs)
+            if analysis["intrabar_ambiguous"]:
+                analysis["findings"].append(
+                    "SL und TP in derselben Kerze – Reihenfolge unbekannt, "
+                    f"gewertet nach Regel '{self.gw.ambiguous_policy}'"
+                )
             self.store.save_analysis(t.id, t.closed_at or closed.isoformat(), analysis)
             self._update_cooldown(t.pair, t.realized_pnl)
             report.closed.append(t.id)

@@ -81,6 +81,11 @@ class PaperExchange:
     withdrawal_permission: bool = False
     margin_positions: bool = False
     stop_slippage_bps: float = 20.0
+    # Liegen SL und TP in derselben Kerze, ist die Reihenfolge aus OHLC nicht bestimmbar.
+    # "stop_first" (Standard, konservativ) oder "take_profit_first" (nur als markierte
+    # Obergrenze für Sensitivitätsanalysen). Betroffene Exits werden als ``ambiguous``
+    # gekennzeichnet; es wird keine Tick-Reihenfolge erfunden.
+    ambiguous_policy: str = "stop_first"
     fail_next: str | None = None
     orders: dict[str, ExchangeOrder] = field(default_factory=dict)
     name: str = "paper"
@@ -286,10 +291,19 @@ class PaperExchange:
             tp = next((o for o in group if o.role is LegRole.TAKE_PROFIT), None)
             fill: tuple[ExchangeOrder, float, float] | None = None
             slip = 1 - self.stop_slippage_bps * 1e-4
+            ambiguous = (
+                sl is not None
+                and tp is not None
+                and low <= sl.price
+                and high >= tp.price
+                and sl.price < open_ < tp.price
+            )
             if sl is not None and open_ <= sl.price:
                 fill = (sl, open_ * slip, self.fees.taker)  # Kurslücke unter den Stop
             elif tp is not None and open_ >= tp.price:
                 fill = (tp, open_, self.fees.maker)  # Kurslücke über das Ziel
+            elif ambiguous and self.ambiguous_policy == "take_profit_first":
+                fill = (tp, tp.price, self.fees.maker)  # nur als Obergrenze
             elif sl is not None and low <= sl.price:
                 fill = (sl, sl.price * slip, self.fees.taker)  # konservativ: Stop zuerst
             elif tp is not None and high >= tp.price:
@@ -297,6 +311,7 @@ class PaperExchange:
             if fill is None:
                 continue
             leg, px, fee_rate = fill
+            leg.ambiguous = ambiguous
             leg.status, leg.filled, leg.avg_price = OrderStatus.CLOSED, leg.volume, px
             leg.fee = leg.volume * px * fee_rate
             self.balances_[rules.base] = self.balances_.get(rules.base, 0.0) - leg.volume
@@ -318,6 +333,7 @@ class PaperExchange:
             "balances": dict(self.balances_),
             "native_bracket": self.native_bracket,
             "stop_slippage_bps": self.stop_slippage_bps,
+            "ambiguous_policy": self.ambiguous_policy,
             "next_id": self.next_id,
             "orders": [
                 {
@@ -340,6 +356,7 @@ class PaperExchange:
             balances_=dict(state["balances"]),
             native_bracket=bool(state["native_bracket"]),
             stop_slippage_bps=float(state["stop_slippage_bps"]),
+            ambiguous_policy=str(state.get("ambiguous_policy", "stop_first")),
             next_id=int(state["next_id"]),
         )
         for raw in state["orders"]:
