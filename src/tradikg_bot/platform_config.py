@@ -79,6 +79,14 @@ class PlatformConfig:
         return self.data_dir / "research.sqlite"
 
     @property
+    def replay_db(self) -> Path:
+        return self.data_dir / "replays.sqlite"
+
+    @property
+    def replay_dir(self) -> Path:
+        return self.data_dir / "replays"
+
+    @property
     def models_db(self) -> Path:
         return self.data_dir / "models.sqlite"
 

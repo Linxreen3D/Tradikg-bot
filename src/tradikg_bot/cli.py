@@ -227,10 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_runs)
 
     from tradikg_bot.cli_platform import register as register_platform
+    from tradikg_bot.cli_replay import register as register_replay
     from tradikg_bot.live.cli_kraken import register
 
     register(sub)
     register_platform(sub)
+    register_replay(sub)
     return parser
 
 

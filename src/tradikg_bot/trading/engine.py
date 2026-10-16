@@ -77,6 +77,9 @@ class PaperEngineConfig:
     timeframe: str = "1h"
     capital_eur: float = 100.0
     assumed_spread_bps: float = 10.0
+    # Tatsächlicher Spread der Simulation; None = wie angenommen. Größer als
+    # ``assumed_spread_bps`` = Robustheitsprüfung „schlechtere Ausführung als erwartet“.
+    simulated_spread_bps: float | None = None
     expected_entry_slippage_bps: float = 5.0  # Erwartung (das IOC-Limitband ist breiter)
     base_cooldown_bars: int = 1
     max_cooldown_bars: int = 48
@@ -201,7 +204,8 @@ class PaperTradingEngine:
             self._history[symbol] = pd.concat([hist, row]).iloc[-2000:]
 
     def _set_book(self, symbol: str, price: float, volume: float) -> None:
-        half = self.cfg.assumed_spread_bps / 2 * 1e-4
+        spread = self.cfg.simulated_spread_bps
+        half = (self.cfg.assumed_spread_bps if spread is None else spread) / 2 * 1e-4
         depth = max(volume / 25.0, 1e-9)
         self.gw.set_book(symbol, price * (1 - half), price * (1 + half), depth=depth)
 

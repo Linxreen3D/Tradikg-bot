@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from tradikg_bot.live.config import LiveRiskConfig
 from tradikg_bot.live.journal import ExecutionJournal
 from tradikg_bot.live.models import FeeRates, PairRules
 from tradikg_bot.live.paper import PaperExchange
@@ -71,6 +72,7 @@ def open_engine(
     source: SignalSource,
     config: PaperEngineConfig,
     fees: FeeRates = DEFAULT_PAPER_FEES,
+    risk: LiveRiskConfig | None = None,
 ) -> PaperTradingEngine:
     paths.root.mkdir(parents=True, exist_ok=True)
     store = PaperStore(paths.db)
@@ -102,6 +104,7 @@ def open_engine(
         probability,
         source,
         config,
+        risk=risk,
         kill_switch=KillSwitch(paths.kill_switch),
     )
 
