@@ -19,6 +19,11 @@ Grundsätze:
   aufheben. Schutzorders werden dabei **nie** storniert.
 * **Neustart:** ``reconcile()`` gleicht beim Start und vor jedem Trade alle aktiven
   Journal-Einträge mit dem Börsenzustand ab.
+* **Live und Paper teilen diese Klasse:** Paper-Konten nutzen dieselbe Order- und
+  Risikologik mit eigener Börse (``PaperExchange``) und eigenem Journal.
+* **Keine feste Trade-Anzahl:** Es gibt keine Obergrenze für Trades pro Tag oder
+  gleichzeitige Positionen; begrenzt wird über Kapital, Risiko und Tagesverlust.
+  Pro Paar ist höchstens eine aktive Position erlaubt (verhindert Doppelorders).
 """
 
 from __future__ import annotations
@@ -75,15 +80,24 @@ class LiveExecutor:
         approval: LiveApproval | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
-        today: Callable[[], dt.date] = lambda: dt.datetime.now(dt.UTC).date(),
+        today: Callable[[], dt.date] | None = None,
+        now: Callable[[], dt.datetime] | None = None,
+        capital_limit: Callable[[], float] | None = None,
+        day_start_balance: Callable[[dt.date], float] | None = None,
     ) -> None:
+        """``capital_limit``: einsetzbares Kapital (z. B. Trading-Balance aus dem Ledger).
+        ``day_start_balance``: Trading-Balance zu Tagesbeginn -> Tagesverlustlimit =
+        ``daily_loss_fraction`` davon. Ohne Angabe gilt das feste Pilot-Limit."""
         self.gw = gateway
         self.journal = journal
         self.cfg = config or LiveRiskConfig()
         self.approval = approval
         self._clock = clock
         self._sleep = sleep
-        self._today = today
+        self._now = now or (lambda: dt.datetime.now(dt.UTC))
+        self._today = today or (lambda: self._now().date())
+        self._capital_limit = capital_limit
+        self._day_start_balance = day_start_balance
 
     # -- Status --------------------------------------------------------------------------
     @property
@@ -94,6 +108,16 @@ class LiveExecutor:
         if trade is not None and trade.state.is_active:
             self.journal.update_trade(trade.id, state=TradeState.UNRESOLVED)
         self.journal.set_halt(reason)
+
+    def daily_loss_limit_eur(self) -> float:
+        if self._day_start_balance is None:
+            return self.cfg.daily_loss_limit_eur
+        return max(0.0, self.cfg.daily_loss_fraction * self._day_start_balance(self._today()))
+
+    def max_loss_per_trade_eur(self) -> float:
+        if self.cfg.risk_per_trade_fraction is not None and self._capital_limit is not None:
+            return self.cfg.risk_per_trade_fraction * max(0.0, self._capital_limit())
+        return self.cfg.max_loss_per_trade_eur
 
     def remaining_daily_budget(self) -> float:
         """Tageslimit minus heutiger realisierter Verlust minus Worst-Case offener Positionen."""
@@ -107,7 +131,7 @@ class LiveExecutor:
                 open_risk += max(
                     0.0, entry_value + t.entry_fee - t.filled_volume * stop_fill * (1 - fee_rate)
                 )
-        return self.cfg.daily_loss_limit_eur + min(0.0, realized_today) - open_risk
+        return self.daily_loss_limit_eur() + min(0.0, realized_today) - open_risk
 
     # -- Abgleich (Start, vor jedem Trade, periodisch) ------------------------------------
     def reconcile(self) -> ReconcileReport:
@@ -221,11 +245,11 @@ class LiveExecutor:
                 exit_avg_price=proceeds / exited,
                 exit_fee=exit_fee,
                 realized_pnl=pnl,
-                closed_at=dt.datetime.now(dt.UTC).isoformat(),
+                closed_at=self._now().isoformat(),
             )
             self.journal.log("INFO", f"Trade {trade.id} geschlossen ({reason}), PnL {pnl:.4f} EUR")
             report.closed_trades.append(trade.id)
-            if self.journal.realized_pnl_on(self._today()) <= -self.cfg.daily_loss_limit_eur:
+            if self.journal.realized_pnl_on(self._today()) <= -self.daily_loss_limit_eur():
                 self.journal.log("WARNING", "Tagesverlustlimit erreicht – keine neuen Trades heute")
             return
         # Ein Bein ausgeführt, das andere noch offen -> OCO defekt / Überverkauf möglich
@@ -271,6 +295,8 @@ class LiveExecutor:
             max_notional_eur=max_notional_eur,
             cumulative_realized_pnl=self.journal.realized_pnl_total(),
             remaining_daily_budget_eur=self.remaining_daily_budget(),
+            capital_limit_eur=self._capital_limit() if self._capital_limit else None,
+            max_loss_per_trade_eur=self.max_loss_per_trade_eur(),
         )
 
     def open_position(
@@ -283,8 +309,10 @@ class LiveExecutor:
         self.reconcile()
         if self.halted:
             raise TradingHaltedError(f"SAFE_HALT aktiv: {self.journal.halt_reason}")
-        if self.journal.trades(active_only=True):
-            raise TradingHaltedError("Es ist bereits eine Position aktiv (Pilot: max. eine)")
+        if any(t.pair == pair for t in self.journal.trades(active_only=True)):
+            raise TradingHaltedError(f"Für {pair} ist bereits eine Position aktiv")
+        if self.gw.is_live and self.cfg.paper:
+            raise LiveTradingBlockedError(["Paper-Konfiguration darf nicht live verwendet werden"])
         check_live_gate(
             self.gw, self.approval, pair, self.cfg.pilot_capital_eur, today=self._today()
         )

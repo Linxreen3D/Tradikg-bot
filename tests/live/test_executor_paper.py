@@ -256,3 +256,47 @@ def test_failed_precheck_does_not_consume_approval(paper, journal):
     with pytest.raises(PlanRejectedError):
         ex.open_position("XBTEUR", SL, 60200.0, 10.0)  # TP zu nah -> Kostenfilter
     assert open_(ex).state is TradeState.PROTECTED  # Freigabe noch gültig
+
+
+# -- Erweiterungen Master-Sprint: mehrere Positionen, dynamisches Tageslimit -------------
+def test_several_positions_on_different_pairs_are_allowed(journal):
+    from tradikg_bot.live.config import LiveRiskConfig
+
+    paper = PaperExchange(native_bracket=True, balances_={"ZEUR": 100.0})
+    paper.set_book("XBTEUR", 60000.0, 60010.0)
+    paper.set_book("SOLEUR", 150.0, 150.05)
+    cfg = LiveRiskConfig.for_paper(100.0)
+    ex = make_executor(paper, journal)
+    ex.cfg = cfg
+    a = ex.open_position("XBTEUR", SL, TP, 30.0)
+    b = ex.open_position("SOLEUR", 145.0, 160.0, 30.0)
+    assert a.state is b.state is TradeState.PROTECTED
+    with pytest.raises(TradingHaltedError, match="bereits eine Position"):
+        ex.open_position("XBTEUR", SL, TP, 30.0)  # Doppelorder auf dasselbe Paar
+
+
+def test_paper_config_is_refused_by_live_gateway(journal):
+    from tradikg_bot.live.config import LiveRiskConfig
+
+    paper = PaperExchange(native_bracket=True, balances_={"ZEUR": 100.0})
+    paper.set_book("XBTEUR", 60000.0, 60010.0)
+    paper.is_live = True
+    ex = make_executor(paper, journal)
+    ex.cfg = LiveRiskConfig.for_paper(100.0)
+    with pytest.raises(LiveTradingBlockedError, match="Paper-Konfiguration"):
+        open_(ex)
+
+
+def test_live_config_cap_stays_at_10_eur():
+    from tradikg_bot.live.config import LiveRiskConfig
+
+    with pytest.raises(ValueError):
+        LiveRiskConfig(pilot_capital_eur=100.0)
+    assert LiveRiskConfig.for_paper(100.0).pilot_capital_eur == 100.0
+
+
+def test_daily_loss_limit_follows_day_start_balance(paper, journal):
+    ex = make_executor(paper, journal)
+    ex._day_start_balance = lambda day: 8.0  # nach Verlusten: 10 % von 8 EUR
+    assert ex.daily_loss_limit_eur() == pytest.approx(0.8)
+    assert ex.remaining_daily_budget() == pytest.approx(0.8)

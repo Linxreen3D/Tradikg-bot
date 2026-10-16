@@ -103,7 +103,11 @@ def plan_trade(
     max_notional_eur: float,
     cumulative_realized_pnl: float,
     remaining_daily_budget_eur: float,
+    capital_limit_eur: float | None = None,
+    max_loss_per_trade_eur: float | None = None,
 ) -> TradePlan:
+    """``capital_limit_eur`` überschreibt die Obergrenze aus der Konfiguration (z. B. aus dem
+    Kapital-Ledger); sie wird dennoch nie über ``cfg.pilot_capital_eur`` angehoben."""
     plan = TradePlan(pair=pair)
     add = plan.checks.append
 
@@ -160,6 +164,8 @@ def plan_trade(
         add(Check("Exposure bestimmbar", False, str(exc)))
         return plan
     cap = cfg.effective_cap(cumulative_realized_pnl)
+    if capital_limit_eur is not None:
+        cap = max(0.0, min(cfg.pilot_capital_eur, capital_limit_eur))
     headroom = cap - exposure
     add(
         Check(
@@ -169,7 +175,10 @@ def plan_trade(
             + ("; ".join(exp_details) or "keine offenen Orders/Bestände"),
         )
     )
-    risk_budget = min(cfg.max_loss_per_trade_eur, remaining_daily_budget_eur)
+    per_trade = max_loss_per_trade_eur
+    if per_trade is None:
+        per_trade = cfg.max_loss_per_trade_eur
+    risk_budget = min(per_trade, remaining_daily_budget_eur)
     add(
         Check(
             "Tagesverlustbudget",
