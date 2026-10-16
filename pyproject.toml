@@ -25,9 +25,12 @@ ml = [
     "scikit-learn>=1.3",
 ]
 # Lokales Web-Dashboard
+# Streamlit nutzt pyarrow, das NumPy >= 2 benötigt (damit auch pandas >= 2.2.2)
 dashboard = [
     "streamlit>=1.30",
     "psutil>=5.9",
+    "numpy>=2.0",
+    "pandas>=2.2.2",
 ]
 dev = [
     "pytest>=8.0",

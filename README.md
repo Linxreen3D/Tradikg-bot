@@ -1,114 +1,94 @@
 # Tradikg-Bot
 
-Lokal betreibbarer Trading-Bot mit KI-Unterstützung als Ziel, gedacht für ein
-MacBook Air M2 (16 GB RAM). Der Bot läuft komplett lokal, ohne kostenpflichtige
-Dienste und ohne Claude-API-Aufrufe.
+Lokal betriebene Research- und Paper-Trading-Plattform für einen MacBook Air M2
+(16 GB RAM). Sie analysiert Märkte, prüft Strategiehypothesen statistisch, handelt
+**virtuell** und autonom, wertet jeden Trade aus und testet Verbesserungen
+kontrolliert. Alles läuft lokal, ohne Claude-/OpenAI-Sitzung und ohne
+kostenpflichtige Dienste.
 
-> **Status: Sprint 1 + Kraken-Pilot-Vorbereitung. Es wird nur virtuell gehandelt.**
-> Backtest und Konfiguration kennen keinen Echtgeld-Modus: Fordert die Konfiguration
-> `live` an oder enthält sie Felder wie `api_key`, bricht das Programm ab. Die
-> Kraken-Anbindung (`tradikg kraken …`) ist mehrfach gesperrt und kann derzeit
-> keine Echtgeldorder senden. API-Schlüssel werden nur aus Umgebungsvariablen oder
-> einer Datei außerhalb des Repositorys gelesen.
-> Die Ergebnisse sind keine Anlageberatung.
+> **Status: Nur virtueller Handel. Echtgeld: NOT LIVE READY.**
+> Ein autonomer Echtgeldmodus existiert nicht. Die Kraken-Anbindung ist mehrfach
+> gesperrt, weil die Kraken-Spot-API keinen börsenseitigen Stop-Loss/Take-Profit-
+> Bracket (OCO) anbietet. Eine Echtgeld-Freigabe gilt immer nur für **einen** Trade.
+> API-Schlüssel nur aus dem macOS-Schlüsselbund, Umgebungsvariablen oder einer Datei
+> außerhalb des Repositorys. **Keine Anlageberatung, keine Renditeversprechen.**
 
-Was in diesem Sprint umgesetzt wurde, was noch offen ist und welche
-Einschränkungen gelten, steht in [`docs/SPRINT_01.md`](docs/SPRINT_01.md).
-
-> **Kraken-Live-Pilot (max. 10 €): NOT LIVE READY.** Die Execution-Komponente für
-> Kraken Pro Spot (`tradikg kraken …`) ist vorbereitet, die Live-Ausführung aber
-> gesperrt. Die Kraken-Spot-API bietet keinen börsenseitigen Stop-Loss-/Take-Profit-Bracket
-> (OCO). Details, Risiken und Runbook: [`docs/KRAKEN_LIVE_PILOT.md`](docs/KRAKEN_LIVE_PILOT.md).
-> Eine Echtgeld-Freigabe gilt immer nur für **einen** Trade. Autonomer Handel ist als
-> eigene Phase mit eigener Freigabe geplant: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+| Dokument | Inhalt |
+|---|---|
+| [`docs/MACOS_SETUP.md`](docs/MACOS_SETUP.md) | Installation und Dauerbetrieb auf dem Mac |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Komponenten, Datenfluss, Entscheidungen |
+| [`docs/SPRINT_MASTER.md`](docs/SPRINT_MASTER.md) | Umgesetzt, Testergebnisse, Risiken, nächste Schritte |
+| [`docs/LIVE_READINESS.md`](docs/LIVE_READINESS.md) | Live-Readiness, Broker-Alternativen, Sicherheits-Checkliste |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phasen und Freigabestufen |
+| [`docs/KRAKEN_LIVE_PILOT.md`](docs/KRAKEN_LIVE_PILOT.md) | Kraken-Recherche und Pilot-Komponente |
+| [`docs/SPRINT_01.md`](docs/SPRINT_01.md) | Sprint 1 (Backtesting-Fundament) |
 
 ---
 
-## Installation (macOS / Apple Silicon)
-
-Voraussetzung ist Python 3.11 oder neuer, zum Beispiel über `brew install python@3.12`.
+## Schnellstart (macOS, Apple Silicon)
 
 ```bash
-git clone https://github.com/linxreen3d/tradikg-bot.git
-cd tradikg-bot
-python3 -m venv .venv
+git clone https://github.com/Linxreen3D/Tradikg-bot.git && cd Tradikg-bot
+scripts/check_environment.sh
+scripts/setup_mac.sh                         # venv, Abhängigkeiten, ~/.tradikg
 source .venv/bin/activate
-pip install -e ".[dev]"          # Kern + Test-/Lint-Werkzeuge
-pip install -e ".[data]"         # optional: kostenlose Online-Datenquellen (ccxt, yfinance)
+tradikg research run --source kraken         # Strategien auf echten Kraken-Daten prüfen
+tradikg research report
+scripts/start_bot.sh                         # autonomer Paper-Dauerbetrieb
+scripts/start_dashboard.sh                   # http://127.0.0.1:8501
 ```
 
-Ohne die Extras braucht der Kern nur `numpy` und `pandas`. Daten werden lokal in
-SQLite gespeichert (`data/tradikg.sqlite`), eine separate Datenbank ist nicht nötig.
+Autostart über launchd: `scripts/setup_mac.sh --install-launchd`. Details,
+Energieeinstellungen und Fehlersuche: [`docs/MACOS_SETUP.md`](docs/MACOS_SETUP.md).
 
-## Ausführung
+Manuelle Installation: `pip install -e ".[ml,dashboard,dev]"` (Python 3.11–3.13).
+Der Kern braucht nur `numpy` und `pandas`; `ml` (scikit-learn), `dashboard`
+(Streamlit) und `data` (ccxt, yfinance) sind optional.
 
-Alle Befehle aus dem Projektverzeichnis starten. Dann wird `config/default.toml`
-automatisch geladen.
+## Befehle
 
 ```bash
-# 1) Daten bereitstellen (eine der drei Varianten)
-tradikg sample-data --symbol DEMO-EUR                       # synthetisch, offline (keine echten Marktdaten)
-tradikg import-csv kurse.csv --symbol BTC-EUR --timeframe 1d --asset-class crypto
-tradikg fetch --symbol BTC/EUR --timeframe 1d --asset-class crypto --start 2022-01-01   # benötigt .[data]
-tradikg fetch --symbol AAPL    --timeframe 1d --asset-class stock  --start 2022-01-01   # benötigt .[data]
-
-# 2) Gespeicherte Kursreihen anzeigen
-tradikg list-data
-
-# 3) Baseline-Strategie backtesten (Ergebnis + Trades landen in SQLite)
-tradikg backtest --symbol DEMO-EUR
-tradikg backtest --symbol DEMO-EUR --fast 10 --slow 30 --trend 0 --export-trades reports/trades.csv
-tradikg backtest --symbol AAPL --fixed-fee 1.0 --spread-bps 10 --slippage-bps 5
-
-# 4) Frühere Läufe anzeigen
-tradikg runs
+tradikg init | doctor [--network] | backup
+tradikg research run --source kraken|cache|synthetic [--symbols XBTEUR,ETHEUR] [--timeframe 1h]
+tradikg research report [--run-id N]
+tradikg ml train --source cache
+tradikg paper run [--once] | replay --source cache | status | report [--day YYYY-MM-DD]
+tradikg paper kill [--release] | reset-halt --note "Prüfergebnis"
+tradikg kraken market-check | preflight | paper-trade | status   # Kraken-Pilot (Live gesperrt)
+tradikg sample-data | import-csv | fetch | backtest | runs        # Sprint-1-Backtesting
 ```
-
-Statt `tradikg …` funktioniert auch `python -m tradikg_bot …`.
-
-CSV-Dateien brauchen eine Zeitspalte (`timestamp`, `date`, `datetime` oder
-`time`) sowie `open, high, low, close, volume`. Die Groß-/Kleinschreibung ist
-egal. Zeitstempel ohne Zeitzone werden als UTC gelesen. Ein Zeitstempel bezeichnet
-die **Öffnungszeit** der Kerze.
 
 ## Tests und Lint
 
 ```bash
-pytest            # 179 Tests (+4 Opt-in-Tests gegen die echte Kraken-API)
-ruff check src tests && ruff format --check src tests
+scripts/run_tests.sh      # ruff + pytest (291 Tests, 4 Opt-in-Tests gegen die echte Kraken-API)
+KRAKEN_PUBLIC_INTEGRATION=1 pytest tests/live/test_kraken_public_live.py   # mit Internet
 ```
 
-Die GitHub-Actions-CI führt Lint und Tests unter Python 3.11, 3.12 und 3.13 aus.
+Die GitHub-Actions-CI prüft Lint und Tests unter Python 3.11, 3.12 und 3.13.
 
 ---
 
-## Architektur
+## Architektur (Kurzfassung)
 
 ```
 src/tradikg_bot/
-├── config.py            Konfiguration (TOML), nur Modi backtest/paper, Sperren für Live-Modus und Secrets
-├── domain.py            AssetClass, Instrument (Stückelung, Mindestordergröße), ExitReason
-├── data/
-│   ├── validation.py    Normalisierung auf UTC-OHLCV, Duplikate, ungültige Kerzen, Lückenbericht
-│   ├── processing.py    Resampling ohne unfertige Kerzen, chronologischer Train/Test-Split
-│   └── sources.py       CSV, synthetische Daten, optional ccxt (Krypto) und yfinance (Aktien)
-├── storage/
-│   └── sqlite_store.py  Tabellen instruments, bars, backtest_runs, trades
-├── costs/fees.py        Kommission (prozentual, minimal, fix), Spread, Slippage, Break-even
-├── indicators.py        kausale Indikatoren: SMA, EMA, ATR (Wilder), RSI
-├── strategies/
-│   ├── base.py          Strategie-Schnittstelle und Signalvertrag
-│   └── sma_crossover.py Baseline: SMA-Crossover, Trendfilter, ATR-basierter SL/TP
-├── risk/
-│   ├── sizing.py        Positionsgröße nach Worst-Case-Verlust inkl. Kosten, Kosten-/CRV-Filter
-│   └── limits.py        tägliche Verlust-Abschaltschwelle (10 %)
-├── backtest/
-│   ├── engine.py        ereignisgesteuerte Engine (Ausführung zur nächsten Eröffnung)
-│   ├── lookahead.py     empirischer Test auf Look-Ahead-Bias
-│   ├── metrics.py       Performance-, Risiko- und Kostenkennzahlen, Tagesvolumen-Benchmark
-│   └── report.py        Textbericht
-└── cli.py               Kommandozeile
+├── market/        Kraken-Marktdaten (OHLC, Ticker), Cache, Rate-Limit, Retry, Scanner, Quellen
+├── features/      kausale Features, Regime-Erkennung
+├── strategies/    Strategiefamilien (Trend, Momentum, Mean Reversion, Volatilität, Volumen, Struktur)
+├── research/      Walk-Forward-Research, Baselines, Kosten-Sensitivität, Berichte
+├── ml/            Triple-Barrier-Datensatz, Modelle, Kalibrierung, Register, Champion/Challenger
+├── trading/       autonomer Paper-Kreislauf, Signal-Ranking, Ledger 33/33/34, Nachanalyse
+├── live/          Executor, Journal, Gate, Paper-Börse, Kraken-Client/Gateway (Live gesperrt)
+├── invest/        Langfrist-Portfolio (Grundgerüst, keine Käufe)
+├── dashboard/     Streamlit-App (nur lokal, nur lesend)
+├── service/       Paper-Dauerbetrieb, Instanzsperre, Logs, Backups
+├── backtest/, data/, costs/, risk/, storage/   Sprint-1-Fundament
+└── cli.py, cli_platform.py
+scripts/           macOS-Skripte        deploy/launchd/   launchd-Vorlagen
 ```
+
+Ausführlich: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ### Schutz vor Look-Ahead-Bias
 
@@ -131,11 +111,11 @@ src/tradikg_bot/
 
 ### Kostenmodell
 
-| Baustein | Krypto-Standard (`CRYPTO_SPOT_DEFAULT`) | Aktien-Standard (`STOCK_NEOBROKER_DEFAULT`) |
-|---|---|---|
-| Kommission | 0,10 % vom Nennwert | 1,00 € fix pro Order |
-| Spread (gesamt) | 10 bps | 10 bps |
-| Slippage | 5 bps je Marktorder | 5 bps je Marktorder |
+| Baustein | Kraken-Annahme (`KRAKEN_SPOT_ASSUMED`, Research + Paper) | Krypto generisch (`CRYPTO_SPOT_DEFAULT`, Sprint-1-Backtest) | Aktien (`STOCK_NEOBROKER_DEFAULT`) |
+|---|---|---|---|
+| Kommission | 0,40 % Taker (Paper: Maker 0,25 % für TP-Limits) | 0,10 % vom Nennwert | 1,00 € fix pro Order |
+| Spread (gesamt) | 10 bps | 10 bps | 10 bps |
+| Slippage | 5 bps je Marktorder (Stop: 50 bps Annahme im Worst Case) | 5 bps | 5 bps |
 
 Marktorders (Einstieg, Stop-Loss, Signal-Ausstieg) zahlen den halben Spread und
 die Slippage. Take-Profit wird als Limit-Order zum Limitkurs ausgeführt. Die
@@ -150,7 +130,17 @@ Nettorisiko bis zum Stop mindestens im eingestellten Verhältnis übersteigt
 (`min_reward_risk_after_costs`). Trades, bei denen das nicht der Fall ist, werden
 verworfen und mit Grund protokolliert.
 
-### Risikoregeln (in der Engine umgesetzt)
+### Risikoregeln
+
+Für den autonomen Paper-Kreislauf und den (gesperrten) Live-Pfad gelten dieselben
+Prüfungen (`live/precheck.py`): Mindestvolumen und Mindestwert für Einstieg, SL und TP,
+Präzision, Spread, Liquidität, Slippage, Worst-Case-Verlust, Chance/Risiko nach
+Kosten, Kapitalobergrenze inkl. offener Orders und Bestände, Tagesverlustbudget.
+Die Tagesverlust-Abschaltschwelle beträgt 10 % der Trading-Balance zu Tagesbeginn
+(UTC), realisiert plus unrealisiert. Sie ist eine Abschaltregel, keine Garantie für
+einen maximalen Verlust. Es gibt keine feste Höchstzahl von Trades pro Tag.
+
+Sprint-1-Backtest-Engine:
 
 - Jede Position hat Stop-Loss und Take-Profit. Einstiege ohne gültige Marken werden verworfen.
 - Der Worst-Case-Verlust bis zum Stop inklusive aller Kosten ist höchstens `risk_per_trade` (Standard 1 %) der Equity.
