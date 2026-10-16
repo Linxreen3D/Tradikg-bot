@@ -151,3 +151,14 @@ class FakeKrakenPublic:
                 )
             return {"XXBTZEUR": rows, "last": int(self.opens[-1].timestamp())}
         raise AssertionError(f"unerwarteter Endpunkt {endpoint}")
+
+
+def advance(fake: FakeKrakenPublic, hours: int, seed: int = 99) -> None:
+    """Simuliert verstreichende Zeit: neue Kerzen kommen hinzu."""
+    rng = np.random.default_rng(seed + len(fake.opens))
+    step = fake.opens[1] - fake.opens[0]
+    extra = pd.date_range(fake.opens[-1] + step, periods=hours, freq=step)
+    fake.opens = fake.opens.append(extra)
+    last = fake.close[-1]
+    fake.close = np.concatenate([fake.close, last * np.exp(np.cumsum(rng.normal(0, 0.004, hours)))])
+    fake.now = fake.now + hours * step

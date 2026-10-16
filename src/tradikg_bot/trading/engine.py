@@ -168,6 +168,7 @@ class PaperTradingEngine:
             config.capital_eur, allowed_pairs=tuple(gateway.rules)
         )
         self.now: pd.Timestamp = pd.Timestamp("1970-01-01", tz="UTC")
+        self._catchup = False
         self._lock = threading.Lock()
         self._history: dict[str, pd.DataFrame] = {}
         self._clock = _SimulatedClock()
@@ -208,6 +209,8 @@ class PaperTradingEngine:
         return f"day_halt:{self.now.date().isoformat()}"
 
     def entries_blocked(self) -> str | None:
+        if self._catchup:
+            return "Nachholen verpasster Kerzen – keine neuen Einstiege auf veralteten Daten"
         if self.kill.engaged:
             return "Kill Switch aktiv"
         if self.executor.halted:
@@ -226,8 +229,38 @@ class PaperTradingEngine:
         return {t.pair for t in self.journal.trades(active_only=True)}
 
     # -- Schritt -----------------------------------------------------------------------------
-    def step(self, ts: pd.Timestamp, bars: dict[str, Bar]) -> StepReport:
+    def seed_history(self, data: dict[str, pd.DataFrame]) -> int:
+        """Lädt Vorlaufdaten ohne zu handeln (z. B. beim ersten Start) und markiert die
+        Zeitschritte als verarbeitet. Gibt die Anzahl der Schritte zurück."""
         with self._lock:
+            stamps = sorted(set().union(*[set(df.index) for df in data.values()]))
+            for ts in stamps:
+                ts = pd.Timestamp(ts)
+                if self.store.step_done(ts):
+                    continue
+                for sym, df in data.items():
+                    if ts in df.index:
+                        row = df.loc[ts]
+                        self._append(
+                            sym,
+                            ts,
+                            Bar(
+                                float(row["open"]),
+                                float(row["high"]),
+                                float(row["low"]),
+                                float(row["close"]),
+                                float(row["volume"]),
+                            ),
+                        )
+                self.store.mark_step(ts, ts + self.cfg.step)
+            return len(stamps)
+
+    def step(
+        self, ts: pd.Timestamp, bars: dict[str, Bar], allow_entries: bool = True
+    ) -> StepReport:
+        """``allow_entries=False``: verpasste Kerzen nachholen – Exits ja, neue Einstiege nein."""
+        with self._lock:
+            self._catchup = not allow_entries
             ts = (
                 pd.Timestamp(ts).tz_convert("UTC")
                 if pd.Timestamp(ts).tzinfo
