@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Tradikg Paper-Dauerbetrieb (nur Paper-Modus, kein Echtgeld).
+  Wird von scripts/setup_mac.sh nach ~/Library/LaunchAgents kopiert.
+  caffeinate -i verhindert den Leerlauf-Ruhezustand, solange der Prozess läuft.
+  Bei geschlossenem Deckel ohne externes Display schläft ein MacBook trotzdem
+  (siehe docs/MACOS_SETUP.md).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tradikg.paper</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>__VENV_DIR__/bin/tradikg</string>
+    <string>paper</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO_DIR__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TRADIKG_HOME</key>
+    <string>__TRADIKG_HOME__</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    <key>NetworkState</key>
+    <true/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__TRADIKG_HOME__/logs/launchd.paper.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__TRADIKG_HOME__/logs/launchd.paper.err.log</string>
+</dict>
+</plist>

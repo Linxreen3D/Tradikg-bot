@@ -5,6 +5,12 @@ Quellen (in dieser Reihenfolge):
 2. JSON-Datei, deren Pfad in ``TRADIKG_KRAKEN_CREDENTIALS`` steht
    (``{"api_key": "...", "api_secret": "..."}``). Die Datei muss außerhalb jedes
    Git-Arbeitsverzeichnisses liegen und darf nur für den Besitzer lesbar sein (0600).
+3. macOS-Schlüsselbund (empfohlen auf dem Mac), Dienst ``tradikg-kraken``,
+   Konten ``api-key`` und ``api-secret``. Anlegen im Terminal (fragt die Werte ab,
+   nichts landet in der Shell-Historie)::
+
+       security add-generic-password -s tradikg-kraken -a api-key -w
+       security add-generic-password -s tradikg-kraken -a api-secret -w
 
 Empfohlene Key-Berechtigungen: *Query Funds*, *Query Open Orders & Trades*,
 *Query Closed Orders & Trades*, *Create & Modify Orders*, *Cancel/Close Orders*.
@@ -18,6 +24,9 @@ import binascii
 import json
 import os
 import stat
+import subprocess
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,14 +60,42 @@ def _inside_git_worktree(path: Path) -> bool:
     return any((parent / ".git").exists() for parent in [path.parent, *path.parent.parents])
 
 
-def load_credentials(env: dict[str, str] | None = None) -> KrakenCredentials:
+KEYCHAIN_SERVICE = "tradikg-kraken"
+
+
+def _keychain_lookup(account: str) -> str | None:
+    """Liest ein Geheimnis aus dem macOS-Schlüsselbund (None, wenn nicht vorhanden)."""
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def load_credentials(
+    env: dict[str, str] | None = None,
+    keychain: Callable[[str], str | None] | None = None,
+) -> KrakenCredentials:
     env = dict(os.environ) if env is None else env
     if env.get(ENV_KEY) or env.get(ENV_SECRET):
         return KrakenCredentials(env.get(ENV_KEY, ""), env.get(ENV_SECRET, ""))
     file_path = env.get(ENV_FILE)
     if not file_path:
+        if keychain is None and sys.platform == "darwin":
+            keychain = _keychain_lookup
+        if keychain is not None:
+            key, secret = keychain("api-key"), keychain("api-secret")
+            if key and secret:
+                return KrakenCredentials(key, secret)
         raise CredentialsError(
-            f"Keine Zugangsdaten: {ENV_KEY}/{ENV_SECRET} oder {ENV_FILE} setzen."
+            f"Keine Zugangsdaten: {ENV_KEY}/{ENV_SECRET}, {ENV_FILE} oder macOS-Schlüsselbund "
+            f"(Dienst '{KEYCHAIN_SERVICE}')."
         )
     path = Path(file_path).expanduser().resolve()
     if _inside_git_worktree(path):

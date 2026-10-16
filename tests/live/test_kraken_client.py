@@ -169,3 +169,11 @@ def test_credentials_file_must_be_private_and_outside_git(tmp_path):
 
 def test_doc_secret_is_valid_base64():
     assert len(base64.b64decode(DOC_SECRET)) == 64
+
+
+def test_credentials_from_macos_keychain():
+    store = {"api-key": "k-from-keychain", "api-secret": DOC_SECRET}
+    creds = load_credentials({}, keychain=store.get)
+    assert creds.api_key == "k-from-keychain"
+    with pytest.raises(CredentialsError, match="Schlüsselbund"):
+        load_credentials({}, keychain=lambda account: None)
