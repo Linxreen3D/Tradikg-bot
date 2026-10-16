@@ -1,5 +1,10 @@
 # Kraken-Pro-Spot: Execution-Komponente für den Live-Pilot (max. 10 €)
 
+> **Aktualisierung (Master-Sprint):** Der Executor unterstützt jetzt mehrere Positionen (eine je Paar)
+> und optional ein Tageslimit von 10 % der Trading-Balance zu Tagesbeginn (über das Ledger).
+> Der Kraken-Live-Pfad (`tradikg kraken live-trade`) nutzt weiterhin das feste Pilot-Limit von 1 €
+> und bleibt gesperrt. Neuer Gesamtbericht: [`LIVE_READINESS.md`](LIVE_READINESS.md).
+
 Stand: 16.10.2026 · Branch `feature/kraken-spot-execution`
 
 ## Entscheidung: **NOT LIVE READY**

@@ -126,6 +126,13 @@ CRYPTO_SPOT_DEFAULT = FeeModel(
     spread_bps=10.0,
     slippage_bps=5.0,
 )
+# Kraken-Pro-Spot-Grundstufe laut öffentlicher Gebührenübersicht (Taker 0.40 %), nicht
+# kontospezifisch verifiziert. Für Research, Paper und Live-Plausibilisierung dieselbe Annahme.
+KRAKEN_SPOT_ASSUMED = FeeModel(
+    commission_rate=0.004,
+    spread_bps=10.0,
+    slippage_bps=5.0,
+)
 STOCK_NEOBROKER_DEFAULT = FeeModel(
     fixed_commission=1.0,  # 1 € Fremdkostenpauschale je Order (typischer Neobroker)
     spread_bps=10.0,

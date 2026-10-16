@@ -117,7 +117,7 @@ class ExecutionJournal:
         self.path = Path(path)
         if str(path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(path), isolation_level=None)
+        self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = FULL")
         self._conn.executescript(_SCHEMA)

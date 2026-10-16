@@ -226,16 +226,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("runs", help="Gespeicherte Backtest-Läufe anzeigen")
     p.set_defaults(func=cmd_runs)
 
+    from tradikg_bot.cli_platform import register as register_platform
     from tradikg_bot.live.cli_kraken import register
 
     register(sub)
+    register_platform(sub)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "kraken":
+    if args.command == "kraken" or getattr(args, "platform_cmd", False):
         return int(args.func(args))
     cfg = _load_config(args.config)
     return int(args.func(args, cfg))

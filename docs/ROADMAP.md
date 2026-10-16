@@ -7,86 +7,79 @@ Freigabe gilt nur für die Phase und den Umfang, für den sie erteilt wurde.
 |---|---|---|
 | 1 | Backtesting-Fundament (Daten, Kosten, Baseline, Engine) | umgesetzt (PR #1) |
 | 2 | Kraken-Spot-Execution-Komponente, fail-closed | umgesetzt, **NOT LIVE READY** (PR #2) |
+| 2.5 | Research-, ML- und autonome **Paper**-Plattform, Dashboard, macOS-Betrieb | umgesetzt (dieser PR) |
 | 3 | Einzelner, manuell überwachter Echtgeld-Testtrade (max. 10 €) | blockiert: kein API-Bracket bei Kraken Spot |
-| 4 | **Autonomer Handelskreislauf** (siehe unten) | geplant, **nicht implementiert**, separate Freigabe nötig |
-| später | Signal-/ML-Modelle, Auswahl Krypto/Aktien, Trade-Analyse, Dashboard | offen |
+| 4 | Autonomer Handelskreislauf **mit Echtgeld** | Logik im Paper-Modus umgesetzt; Echtgeld **nicht freigegeben, nicht aktivierbar** |
+| 5 | Langfrist-Investments mit echten Käufen | Grundgerüst (Datenmodelle, Analysen); Käufe nicht implementiert |
 
 ## Grundsatz: Freigabestufen
 
 | Stufe | Was erlaubt ist | Wie freigegeben | Im Code |
 |---|---|---|---|
-| Paper | Simulation, keine echten Orders | ohne Freigabe | vorhanden |
-| **Einzeltrade** | **genau eine** Echtgeldorder mit Absicherung | CLI-Flag + `ECHTGELD-FREIGABE EINZELTRADE <Datum> MAX 10.00 EUR <Paar>` | vorhanden, wird beim Senden verbraucht |
-| **Autonom** | Bot eröffnet selbstständig neue Positionen | eigene, befristete Autonomie-Freigabe (Phase 4) | **existiert nicht** |
+| Paper | Simulation inkl. autonomem Kreislauf | ohne Freigabe | vorhanden |
+| **Einzeltrade** | **genau eine** Echtgeldorder mit Absicherung | CLI-Flag + `ECHTGELD-FREIGABE EINZELTRADE <Datum> MAX 10.00 EUR <Paar>` | vorhanden, wird beim Senden verbraucht; derzeit durch Kraken-Blocker gesperrt |
+| **Autonom live** | Bot eröffnet selbstständig echte Positionen | eigene, befristete Autonomie-Freigabe | **existiert nicht** – der Paper-Kreislauf lehnt Live-Börsen ab (`AutonomyNotAuthorizedError`) |
 
-Eine Einzeltrade-Freigabe wird **nie** als Erlaubnis für autonomen Handel gewertet.
-Der Executor verbraucht sie atomar im Journal, bevor die Order gesendet wird. Ein
-zweiter Trade mit derselben Freigabe wird abgelehnt (Test
-`test_single_trade_approval_is_consumed_and_not_reusable`). Eine Schleife, die
-selbstständig neue Positionen eröffnet, gibt es im Code nicht.
+Eine Einzeltrade-Freigabe wird nie als Erlaubnis für autonomen Handel gewertet.
 
-## Phase 4: Autonomer Handelskreislauf (Anforderung vom 16.10.2026)
+## Was in Phase 2.5 umgesetzt wurde
 
-Nach **einmaliger, ausdrücklicher Aktivierung** soll der Bot ohne Freigabe pro
-Order handeln. Sobald eine Position vollständig geschlossen ist:
+Die Anforderungen vom 16.10.2026 für den autonomen Kreislauf sind **im Paper-Modus**
+umgesetzt:
 
-1. **Netto-Ergebnis ermitteln:** tatsächlicher Gewinn oder Verlust nach allen
-   Gebühren, aus den Ausführungsdaten der Börse (Füllkurse, Gebühren), nicht aus
-   Schätzungen.
-2. **Gewinnaufteilung erst nach Verlustaufholung:** Ein Gewinn gleicht zuerst noch
-   nicht aufgeholte Verluste aus. Erst der Rest wird verteilt: **33 %
-   Trading-Balance, 33 % Auszahlungsreserve, 34 % Langfristportfolio**.
-3. **Kapital-Recycling:** Die Trading-Balance steht automatisch wieder für neue
-   Signale zur Verfügung.
-4. **Neue Positionen nur, wenn** der geschätzte Erwartungswert nach Kosten positiv
-   ist, genug Kapital vorhanden ist und alle Risikolimits eingehalten sind.
-5. **Jede neue Position** wird mit einem börsenseitig bestätigten Stop-Loss **und**
-   Take-Profit abgesichert. Ohne Bestätigung gilt SAFE_HALT wie heute.
+1. Netto-Ergebnis je Position nach allen Gebühren aus den Ausführungsdaten.
+2. Gewinnaufteilung 33/33/34 erst nach Aufholung früherer Verluste (High-Water-Mark),
+   optionale Steuerrücklage (Satz konfigurierbar, Standard 0, keine Steuerberatung).
+3. Kapital-Recycling: Die Trading-Balance steht neuen Signalen sofort zur Verfügung,
+   gedeckelt durch die Kapitalobergrenze; Rücklagen erhöhen sie nie.
+4. Neue Positionen nur bei positivem Netto-Erwartungswert (aus OOS-Belegen),
+   ausreichendem Kapital und eingehaltenen Risikolimits.
+5. Jede Position mit Stop-Loss und Take-Profit (Paper: simulierter Broker-Bracket).
 
-**Für den ersten Echtgeld-Pilot gelten weiter:** maximal 10 € Gesamtbudget und eine
-Tagesverlust-Abschaltschwelle von 10 % (1 €).
+Außerdem: Market-Data-Engine, Scanner, sechs Strategiefamilien, Research mit
+Walk-Forward und Baselines, Regime-Erkennung, ML mit Champion/Challenger,
+Nachanalyse und Tagesberichte, Dashboard, macOS-Skripte und launchd.
 
-### Voraussetzungen, bevor Phase 4 überhaupt freigegeben werden kann
+## Voraussetzungen für Phase 3 (Einzeltrade live)
 
-- [ ] Börsenseitiger SL/TP-Bracket (OCO) über die API ist bestätigt. Bei Kraken Spot ist das derzeit nicht der Fall, siehe `KRAKEN_LIVE_PILOT.md`.
-- [ ] Phase 3 erfolgreich: mehrere Einzeltrades mit bestätigtem Schutz, sauberem Abgleich und korrekter Netto-Abrechnung.
-- [ ] Signalquelle mit belastbarer Erwartungswert-Schätzung: Out-of-Sample- bzw. Walk-Forward-Statistik nach Kosten, Mindest-Stichprobe, untere Konfidenzgrenze > 0.
-- [ ] Autonomer Kreislauf mehrere Tage im Paper-Betrieb mit Live-Kursen gelaufen, ohne ungeklärten SAFE_HALT.
-- [ ] Du hast die Ergebnisse geprüft und erteilst die Autonomie-Freigabe ausdrücklich.
+- [ ] Broker mit dokumentiertem, börsenseitigem SL/TP-Bracket (OCO) über die API.
+      Kraken Spot: nein. Kandidaten zur Prüfung: Binance Spot (OTOCO), Coinbase
+      Advanced Trade (angehängter TP/SL-Bracket). Regulierung/Verfügbarkeit in
+      Österreich prüfen; keine Konten automatisch anlegen.
+- [ ] Gateway für diesen Broker gegen die offizielle Dokumentation implementiert und
+      mit `validate`-/Test-Endpunkten geprüft.
+- [ ] Mindestgrößen und tatsächliche Gebühren live abgefragt.
+- [ ] Manuelle Abnahme nach `LIVE_READINESS.md`.
+- [ ] Deine ausdrückliche Freigabe.
 
-### Geplanter Entwurf (nicht implementiert)
+## Voraussetzungen für Phase 4 (autonom live)
 
-**Autonomie-Freigabe**, getrennt von der Einzeltrade-Freigabe:
-- eigener Text, z. B. `AUTONOM-FREIGABE <von> BIS <bis> MAX 10.00 EUR PAARE <…> MAX-TRADES-PRO-TAG <n>`
-- **befristet**: Höchstdauer, danach automatisch beendet, keine stillschweigende Verlängerung
-- jederzeit **widerrufbar** (Kill-Switch per CLI-Befehl bzw. Datei). Ein Widerruf verhindert neue Positionen; offene Positionen bleiben durch ihren SL/TP geschützt
-- jede Aktivierung, Verlängerung und jeder Widerruf wird im Journal protokolliert
+- [ ] Phase 3 erfolgreich: mehrere Einzeltrades mit bestätigtem Schutz, sauberem
+      Abgleich und korrekter Netto-Abrechnung.
+- [ ] Mindestens eine Strategie mit Urteil **„bestätigt“** auf echten Marktdaten
+      (nicht synthetisch), anschließend mehrere Wochen Paper-Betrieb mit Live-Daten
+      ohne ungeklärten SAFE_HALT und mit plausibler Kalibrierung.
+- [ ] Autonomie-Freigabe implementiert: befristet, widerrufbar, mit Grenzen (Paare,
+      Kapital), Protokollierung jeder Aktivierung.
+- [ ] Deine ausdrückliche, separate Freigabe.
 
-**Kapital-Ledger** (Buchhaltung im Journal, persistent):
+## Entscheidungen, die bei dir liegen
 
-| Konto | Zufluss | Abfluss |
-|---|---|---|
-| `trading_balance` | Startkapital; Verlustaufholung; 33 % der verteilten Gewinne | Verluste |
-| `unrecovered_losses` | jeder Verlust | Verlustaufholung durch spätere Gewinne |
-| `payout_reserve` | 33 % der verteilten Gewinne | nur manuell |
-| `long_term_portfolio` | 34 % der verteilten Gewinne | nur manuell |
+1. **Broker-Wahl** für Live-Tests (Kraken bietet keinen API-Bracket).
+2. **Steuerrücklage:** Satz für die Rücklage (derzeit 0 %, keine Beratung).
+3. **Kapitalobergrenze Paper** (Standard 100 €) und **Live-Pilot** (fix 10 €).
+4. **Langfristportfolio:** Bleibt es vorerst eine EUR-Buchposition (aktueller Stand)?
+5. **Zeitintervall** des Paper-Betriebs (Standard 1h). Kurze Intervalle verursachen
+   bei Kraken-Gebühren (0,40 % Taker) erfahrungsgemäß mehr Kosten als Vorteil.
 
-Ablauf je geschlossener Position mit Netto-Ergebnis `p`:
-- Ist `p < 0`: `trading_balance -= |p|` und `unrecovered_losses += |p|`.
-- Ist `p > 0`: Zuerst `r = min(p, unrecovered_losses)` zurück in `trading_balance`. Der Rest `p - r` wird 33/33/34 verteilt; Rundung auf Cent, der Rundungsrest geht ins Langfristportfolio.
+## Offen (nicht umgesetzt)
 
-Die Konten sind **reine Buchhaltung auf demselben Börsenkonto**. Es gibt weiterhin
-keine automatischen Auszahlungen, Einzahlungen oder Transfers. Auszahlungsreserve
-und Langfristportfolio werden für neue Trades nie verwendet.
-
-**Erwartungswert-Filter:** Jedes Signal braucht eine Schätzung `E[netto] = p_TP · Gewinn_netto − p_SL · Verlust_netto − Kosten`. Geöffnet wird nur, wenn die untere Konfidenzgrenze über 0 liegt. Ohne Schätzung wird nicht gehandelt.
-
-**Ablauf:** Signal → Erwartungswert-Filter → Vorab-Prüfungen (bestehende 18) → Bracket-Order → Bestätigung → Überwachung (Abgleich) → Schließung → Netto-Abrechnung → Ledger → Freigabe der Trading-Balance → nächstes Signal.
-
-### Klärungsbedarf (deine Entscheidung vor Phase 4)
-
-1. **Verhältnis zur 10-€-Obergrenze:** Darf der 33-%-Gewinnanteil die Trading-Balance über 10 € heben, oder bleibt die Obergrenze fix und der Überschuss geparkt? Vorschlag für den Pilot: Obergrenze bleibt **fix 10 €**, der Überschuss wird nicht eingesetzt.
-2. **Bisherige Regel „keine automatische Wiederauffüllung“:** Bisher senkt jeder Verlust die Obergrenze dauerhaft. Mit Phase 4 würden spätere Gewinne Verluste aufholen und so die Trading-Balance wieder auffüllen, aber nur aus eigenen Handelsgewinnen, nie durch Einzahlungen oder aus Reserve oder Portfolio. Bitte bestätigen, dass das so gemeint ist.
-3. **Langfristportfolio:** Bleibt es eine reine Buchposition (EUR), oder soll es später real investiert werden? Letzteres wäre eine eigene Phase mit eigener Freigabe.
-4. **Rahmen der Autonomie:** Höchstdauer der Freigabe, maximale Trades pro Tag, erlaubte Paare.
-5. **Steuern:** Gewinne sind ggf. steuerpflichtig. Ob die Auszahlungsreserve eine Steuerrücklage enthalten soll, ist offen.
+- Aktien-Broker-Anbindung und Echtzeit-Aktiendaten (nur vorbereitet; kostenlose
+  Daten sind verzögert und inoffiziell).
+- Orderbuch-Ungleichgewichte als Strategie (keine kostenlosen historischen
+  Orderbuchdaten; nur Live-Erfassung wäre möglich).
+- Portfolio-Backtest mit echter Kapitalkonkurrenz über **Research**-Läufe (das Replay
+  des Paper-Kreislaufs deckt Multi-Asset ab, die Research-Engine bewertet je Asset).
+- Fundamentaldaten für Aktien/ETFs (keine verlässliche kostenlose Quelle angebunden).
+- Optionale lokale LLM-Anbindung (bewusst nicht umgesetzt, standardmäßig aus).
+- Live-Orderbuch-Tiefe im Paper-Betrieb (derzeit aus Kerzenvolumen abgeleitet).
