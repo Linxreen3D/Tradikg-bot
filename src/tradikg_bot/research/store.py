@@ -214,3 +214,25 @@ def _oos_rows(results: list[StrategyResearch]):
             )
         )
         yield from _group_rows(trades, regimes, strategy, "*", verdict, {})
+
+
+def oos_stats_from_results(results: list[StrategyResearch]) -> list[OosStats]:
+    """OOS-Statistiken direkt aus Research-Ergebnissen (ohne Datenbank)."""
+    out = []
+    for row in _oos_rows(results):
+        strategy, symbol, regime, n, wins, aw, al, er, verdict, params_json = row
+        out.append(
+            OosStats(
+                strategy,
+                symbol,
+                regime,
+                n,
+                wins,
+                aw,
+                al,
+                er,
+                verdict,
+                json.loads(params_json or "{}") or {},
+            )
+        )
+    return out
