@@ -12,9 +12,10 @@ venv/
 htmlcov/
 .DS_Store
 
-# Lokale Daten & Ergebnisse (werden nicht versioniert)
-data/
-reports/
+# Lokale Daten & Ergebnisse (werden nicht versioniert).
+# Führender Slash: nur im Projektstamm – sonst würde das Paket src/tradikg_bot/data/ ignoriert.
+/data/
+/reports/
 *.sqlite
 *.sqlite3
 *.db
