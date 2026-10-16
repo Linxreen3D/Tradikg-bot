@@ -24,3 +24,8 @@ htmlcov/
 .env
 *.key
 secrets*
+
+# Kraken-/Börsen-Zugangsdaten (gehören nie ins Repository)
+*credentials*.json
+kraken*.json
+*.pem

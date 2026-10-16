@@ -4,14 +4,23 @@ Lokal betreibbarer Trading-Bot mit KI-Unterstützung als Ziel, gedacht für ein
 MacBook Air M2 (16 GB RAM). Der Bot läuft komplett lokal, ohne kostenpflichtige
 Dienste und ohne Claude-API-Aufrufe.
 
-> **Status: Sprint 1. Es wird nur virtuell gehandelt.**
-> Es gibt keine Order-Anbindung an Börsen oder Broker, keine Unterstützung für
-> API-Schlüssel und keinen Echtgeld-Modus. Fordert eine Konfiguration `live` an
-> oder enthält sie Felder wie `api_key`, bricht das Programm mit einem Fehler ab.
+> **Status: Sprint 1 + Kraken-Pilot-Vorbereitung. Es wird nur virtuell gehandelt.**
+> Backtest und Konfiguration kennen keinen Echtgeld-Modus: Fordert die Konfiguration
+> `live` an oder enthält sie Felder wie `api_key`, bricht das Programm ab. Die
+> Kraken-Anbindung (`tradikg kraken …`) ist mehrfach gesperrt und kann derzeit
+> keine Echtgeldorder senden. API-Schlüssel werden nur aus Umgebungsvariablen oder
+> einer Datei außerhalb des Repositorys gelesen.
 > Die Ergebnisse sind keine Anlageberatung.
 
 Was in diesem Sprint umgesetzt wurde, was noch offen ist und welche
 Einschränkungen gelten, steht in [`docs/SPRINT_01.md`](docs/SPRINT_01.md).
+
+> **Kraken-Live-Pilot (max. 10 €): NOT LIVE READY.** Die Execution-Komponente für
+> Kraken Pro Spot (`tradikg kraken …`) ist vorbereitet, die Live-Ausführung aber
+> gesperrt. Die Kraken-Spot-API bietet keinen börsenseitigen Stop-Loss-/Take-Profit-Bracket
+> (OCO). Details, Risiken und Runbook: [`docs/KRAKEN_LIVE_PILOT.md`](docs/KRAKEN_LIVE_PILOT.md).
+> Eine Echtgeld-Freigabe gilt immer nur für **einen** Trade. Autonomer Handel ist als
+> eigene Phase mit eigener Freigabe geplant: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -65,7 +74,7 @@ die **Öffnungszeit** der Kerze.
 ## Tests und Lint
 
 ```bash
-pytest            # 91 Tests
+pytest            # 179 Tests (+4 Opt-in-Tests gegen die echte Kraken-API)
 ruff check src tests && ruff format --check src tests
 ```
 
