@@ -20,6 +20,15 @@ data = [
     "ccxt>=4.2",
     "yfinance>=0.2.40",
 ]
+# Lokales Machine Learning (Training); Vorhersagen brauchen nur numpy
+ml = [
+    "scikit-learn>=1.3",
+]
+# Lokales Web-Dashboard
+dashboard = [
+    "streamlit>=1.30",
+    "psutil>=5.9",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",

@@ -86,3 +86,41 @@ class EmpiricalProbability:
             return ProbabilityEstimate(p0, "prior (keine OOS-Belege)", 0)
         p = (s.wins + self.prior_weight * p0) / (s.n + self.prior_weight)
         return ProbabilityEstimate(p, f"oos[{s.symbol}/{s.regime}]", s.n)
+
+
+class ModelProbability:
+    """Nutzt den registrierten Champion, falls er ein ML-Modell ist; sonst die Fallback-Schätzung.
+
+    Jede verwendete Prognose wird im Register protokolliert, damit sie später mit dem
+    tatsächlichen Ergebnis verglichen werden kann.
+    """
+
+    def __init__(self, registry, fallback: ProbabilityModel) -> None:
+        self.registry, self.fallback = registry, fallback
+        record = registry.champion()
+        self.record = record if record is not None and record.kind != "base_rate" else None
+        self.model = self.record.load() if self.record else None
+        self._by_key = getattr(fallback, "_by_key", {})
+
+    def estimate(
+        self,
+        strategy: str,
+        symbol: str,
+        regime: str,
+        reward_risk: float,
+        features: pd.Series | None = None,
+    ) -> ProbabilityEstimate:
+        base = self.fallback.estimate(strategy, symbol, regime, reward_risk, features)
+        if self.model is None or features is None or features.isna().any():
+            return base
+        if base.source.startswith("prior (Strategie verworfen)"):
+            return base
+        row = pd.DataFrame(
+            [{**features.to_dict(), "reward_risk": reward_risk, "strategy": strategy}]
+        )
+        p = float(self.model.predict(row)[0])
+        ts = str(features.name) if features.name is not None else ""
+        self.registry.record_prediction(self.record.version, symbol, strategy, ts, p)
+        return ProbabilityEstimate(
+            p, f"ml[{self.record.version}]", base.n_evidence, self.record.version
+        )
