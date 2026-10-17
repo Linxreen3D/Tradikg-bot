@@ -85,3 +85,13 @@ def test_live_mode_cannot_be_configured(home):
     (home / "config.toml").write_text('[platform]\nmode = "live"\n')
     with pytest.raises(LiveTradingNotAllowedError):
         main(["paper", "status"])
+
+
+def test_paper_run_once_is_refused_while_service_holds_the_lock(home, capsys):
+    from tradikg_bot.platform_config import PlatformConfig
+    from tradikg_bot.service.ops import InstanceLock
+
+    main(["init"])
+    with InstanceLock(PlatformConfig.load().lock_file):
+        assert main(["paper", "run", "--once"]) == 1
+    assert "Abgelehnt: Es läuft bereits eine Instanz" in capsys.readouterr().out

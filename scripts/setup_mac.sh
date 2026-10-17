@@ -2,6 +2,7 @@
 # Installation auf macOS (Apple Silicon). Löscht niemals bestehende Handelsdaten.
 #   scripts/setup_mac.sh                  # venv + Abhängigkeiten + Initialisierung
 #   scripts/setup_mac.sh --install-launchd  # zusätzlich Autostart (Paper-Modus) einrichten
+#   scripts/setup_mac.sh --uninstall-launchd  # Autostart entfernen (Daten bleiben erhalten)
 set -euo pipefail
 . "$(dirname "$0")/_common.sh"
 
@@ -9,6 +10,14 @@ INSTALL_LAUNCHD=0
 for arg in "$@"; do
   case "$arg" in
     --install-launchd) INSTALL_LAUNCHD=1 ;;
+    --uninstall-launchd)
+      for label in "$PAPER_LABEL" "$DASH_LABEL"; do
+        launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+        rm -f "$LAUNCH_AGENTS/$label.plist"
+        info "Autostart entfernt: $label"
+      done
+      exit 0
+      ;;
     *) fail "Unbekannte Option: $arg" ;;
   esac
 done

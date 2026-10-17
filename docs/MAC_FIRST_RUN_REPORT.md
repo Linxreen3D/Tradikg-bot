@@ -161,3 +161,62 @@ Eingefroren: Standardwerte (`--folds 4 --holdout-frac 0.2 --research-random-runs
 **Vor dem Lauf kein `data fetch-kraken --timeframe 1d`**, sonst verschieben sich Plan und
 Holdout-Grenzen. Laufzeit ca. 1–2 min. Der Lauf wird je Daten-Fingerabdruck gezählt; jeder
 weitere Holdout-Lauf wird als „nicht mehr unangetastet“ markiert.
+
+## Phase E – Dashboard
+
+`scripts/start_dashboard.sh` → http://127.0.0.1:8501 (nur lokal). Alle 7 Tabs laden ohne Fehler
+(Server-Log und Browser-Konsole leer). Abdeckung der geforderten Bereiche:
+
+| Gefordert | Tab | Stand mit echten Daten |
+|---|---|---|
+| Übersicht, Kapitalentwicklung | Übersicht, Analytics (Equity/Drawdown) | 100 € virtuell, noch keine Trades |
+| Historical Replay, Strategie-Vergleich | Historical Replay (Lauf-Auswahl, Baselines, Robustheit) | Läufe #1–#5 sichtbar |
+| Backtest-Ergebnisse | – | Sprint-1-`tradikg backtest` wird nicht angezeigt (bekannt, nicht nachgebaut) |
+| Paper Trading, Trade Journal | Trading (Positionen, Trades, Signale mit Ablehnungsgrund) | Signale ab dem ersten Durchgang |
+| Gebührenanalyse | Analytics → Kosten | leer, solange keine Trades |
+| ML-Research | AI Research | Research-Lauf #1 (1h) |
+| Systemstatus | System Health (Feed, Kill Switch, SAFE_HALT, PID-Sperre, Fehlerprotokoll) | ok |
+
+## Phase F – Autonomes Paper Trading (100 € virtuell, echte Kraken-Daten)
+
+- `tradikg research run --source cache --timeframe 1h --symbols XBTEUR,ETHEUR,SOLEUR` (43 s):
+  alle 21 Strategie/Asset-Kombinationen „hypothese“ mit **0 Test-Trades** – bei Kostenfaktor
+  ×1 blockiert der Kostenfilter jedes Signal (bei ×0 gäbe es Trades). Der Paper-Bot läuft
+  daher passiv und protokolliert nur Signale. Das ist gewollt (kein erzwungener Handel).
+- `scripts/start_bot.sh`: läuft, 300 Vorlaufkerzen geladen, Durchgang kurz nach Kerzenschluss.
+- **Instanzsperre:** `start_bot.sh` meldet „Läuft bereits“. **Fehler gefunden und behoben:**
+  `tradikg paper run --once` nahm die Sperre nicht und lief parallel zum Dienst (Gefahr
+  doppelter Verarbeitung). Jetzt abgelehnt mit Exit-Code 1; Test
+  `test_paper_run_once_is_refused_while_service_holds_the_lock`.
+- **Backup/Wiederherstellung:** `tradikg backup` (69 Datenbanken, 93 MB) in eine Kopie
+  zurückgespielt: `integrity_check` ok für market/research/paper/replays, Daten lesbar.
+- Verbindungsausfall (WLAN aus): **nicht geprüft** – braucht deine Zustimmung. Die Logik ist
+  durch Tests abgedeckt (Retry, Stale-Erkennung, kein Einstieg auf veralteten Daten).
+
+## Phase G – macOS-Dauerbetrieb
+
+- Neu: `scripts/logs.sh` (`--errors`, `-f`) und `scripts/setup_mac.sh --uninstall-launchd`.
+- launchd-Autostart **nicht eingerichtet** – wartet auf deine Zustimmung
+  (`scripts/setup_mac.sh --install-launchd`).
+- **Schlafmodus (gemessen, nichts geändert):** `pmset -g` zeigt `sleep 1` (Akku: Ruhezustand nach
+  1 min), `standby 1`, `powernap 1`. Deckel zu = Ruhezustand = **kein Betrieb**. Nach dem
+  Aufwachen erkennt der Dienst den Zeitsprung und holt bis zu 48 Kerzen nach, ohne auf
+  veralteten Daten einzusteigen. Für Dauerbetrieb (nur Vorschlag): Netzteil anschließen und
+  unter Systemeinstellungen → Batterie → Optionen „Automatischen Ruhezustand bei
+  ausgeschaltetem Display verhindern (Netzteil)“ aktivieren; alternativ den Dienst mit
+  `caffeinate -i` umhüllen (kein Systemeingriff, wirkt nur solange der Dienst läuft).
+
+## Phase H – Kraken-Zugang (nur erklärt, nichts angelegt)
+
+- Daten, Research, Replay und Paper laufen **ohne Schlüssel** (bestätigt).
+- Für einen späteren, separat freizugebenden 10-€-Test – API-Schlüssel nur mit:
+  Guthaben abfragen (Query Funds), offene/geschlossene Orders abfragen, Orders erstellen/ändern,
+  Orders stornieren. **Zwingend aus:** Auszahlung, Einzahlung, alles Weitere (Ledger, Export,
+  Staking, Earn). Das Gate prüft fehlende Auszahlungsrechte per `WithdrawMethods`.
+- Ablage nur im macOS-Schlüsselbund:
+  `security add-generic-password -s tradikg-kraken -a api-key -w` und `-a api-secret -w`.
+- Verbindungstest ohne Order: `tradikg kraken preflight`.
+- **OCO erneut geprüft (17.10.2026, offizielle AddOrder-Doku):** weiterhin nur ein
+  `close[…]`-Folgeauftrag, kein serverseitiges SL+TP-Bracket. Ergebnis bleibt
+  **NOT LIVE READY**. Alternativen mit API-Bracket (Binance OTOCO, Coinbase Advanced) siehe
+  `docs/LIVE_READINESS.md` – nicht geprüft für Österreich.
