@@ -5,6 +5,8 @@ set -euo pipefail
 
 PY="$VENV_DIR/bin/python"
 [ -x "$PY" ] || PY="python3"
+# Werkzeuge aus der venv (z. B. shellcheck-py) für Tests auffindbar machen
+export PATH="$VENV_DIR/bin:$PATH"
 cd "$REPO_DIR"
 "$PY" -m ruff check src tests
 "$PY" -m ruff format --check src tests
