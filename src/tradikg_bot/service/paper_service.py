@@ -59,6 +59,15 @@ class PaperService:
         self.registry = ModelRegistry(cfg.models_db)
         self.symbols = self._resolve_symbols()
         rules = self._rules()
+        self.errors: dict[str, str] = {}
+        if cfg.strategy_mode == "trend":
+            from tradikg_bot.trading.allocation import TrendPaperEngine
+
+            self.engine = TrendPaperEngine(
+                PaperPaths(cfg.paper_dir), rules, cfg.capital_eur, cfg.timeframe, cfg.tax_rate
+            )
+            self.log.info("Modus: Trendfolge-Allokation (SMA 200) für %s", self.symbols)
+            return
         stats = self.research.oos_stats()
         if not stats:
             self.log.warning("Keine Research-Ergebnisse: ohne OOS-Belege wird nicht gehandelt.")
@@ -125,11 +134,9 @@ class PaperService:
         last = self.engine.store.last_step()
         if last is None and data:
             newest = max(df.index[-1] for df in data.values())
+            warmup = max(self.cfg.min_history_bars, getattr(self.engine, "min_history", 0))
             seeded = self.engine.seed_history(
-                {
-                    s: df[df.index < newest].iloc[-(self.cfg.min_history_bars + 50) :]
-                    for s, df in data.items()
-                }
+                {s: df[df.index < newest].iloc[-(warmup + 50) :] for s, df in data.items()}
             )
             self.log.info("Erststart: %s Vorlaufkerzen ohne Handel geladen", seeded)
             last = self.engine.store.last_step()

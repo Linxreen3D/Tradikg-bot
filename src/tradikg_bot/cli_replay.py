@@ -299,7 +299,7 @@ def cmd_replay_report(args: argparse.Namespace) -> int:
 
 
 def cmd_sim(args: argparse.Namespace) -> int:
-    from tradikg_bot.replay.simulate import render_html, simulate, summary_rows
+    from tradikg_bot.replay.simulate import render_html, simulate, simulate_trend, summary_rows
     from tradikg_bot.replay.walkforward import HistoricalReplay, ReplayConfig
 
     cfg = _cfg(args)
@@ -324,7 +324,10 @@ def cmd_sim(args: argparse.Namespace) -> int:
         progress=lambda msg: print(f"  … {msg}", flush=True),
     )
     try:
-        sim = simulate(replay, args.start, args.end, args.research_every)
+        if args.mode == "trend":
+            sim = simulate_trend(replay, args.start, args.end)
+        else:
+            sim = simulate(replay, args.start, args.end, args.research_every)
     except ValueError as exc:
         print(f"Abgebrochen: {exc}")
         return 1
@@ -396,6 +399,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--timeframe", default="1d")
     p.add_argument("--strategies")
     p.add_argument("--research-every", type=int, default=90, help="Research alle N Kerzen")
+    p.add_argument(
+        "--mode",
+        choices=["trend", "signals"],
+        default="trend",
+        help="trend = 200-Tage-Allokation (Standard), signals = Strategie-Signale mit Research",
+    )
     p.add_argument("--rules", choices=["kraken", "example"], default="kraken")
     p.set_defaults(func=cmd_sim, platform_cmd=True)
 

@@ -15,6 +15,7 @@ Ablauf (dieselbe Paper-Engine wie im Dauerbetrieb, keine echten Orders):
 from __future__ import annotations
 
 import html
+from collections import Counter
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -25,6 +26,7 @@ from tradikg_bot.replay.walkforward import (
     HistoricalReplay,
     ReplayPlan,
     ScenarioResult,
+    max_drawdown,
     weekly_stats,
 )
 
@@ -38,6 +40,7 @@ class SimulationResult:
     bots: list[ScenarioResult]
     buy_hold: ScenarioResult
     research: list[CutoffResearch] = field(default_factory=list)
+    note: str = ""
 
 
 def _utc(x: str | pd.Timestamp) -> pd.Timestamp:
@@ -78,6 +81,77 @@ def simulate(
     research = [replay.research.by_cutoff[c] for c in sorted(replay.research.by_cutoff)]
     return SimulationResult(
         idx[s], idx[e - 1], replay.cfg.timeframe, replay.data_source, bots, bh, research
+    )
+
+
+def simulate_trend(
+    replay: HistoricalReplay,
+    start: str | pd.Timestamp,
+    end: str | pd.Timestamp | None = None,
+    profiles: tuple[tuple[str, str, float], ...] = (
+        ("eur100", "100 €", 100.0),
+        ("eur10", "10 € (Größe eines ersten Echtgeld-Tests)", 10.0),
+    ),
+) -> SimulationResult:
+    """Schnelldurchlauf der Trendfolge-Allokation (feste 200-Tage-Regel, keine Research)."""
+    from tradikg_bot.trading.allocation import TrendConfig, run_trend
+
+    idx = replay.plan.index
+    s = int(idx.searchsorted(_utc(start)))
+    e = len(idx) if end is None else int(idx.searchsorted(_utc(end), "right"))
+    cfg = TrendConfig()
+    if s < cfg.sma or e - s < 2:
+        raise ValueError(f"Zu früh oder zu kurz: vor dem Start braucht die Regel {cfg.sma} Kerzen.")
+    rules = replay.rules
+
+    def min_order(sym: str, px: float) -> float:
+        return max(rules[sym].ordermin * px, rules[sym].costmin)
+
+    bots = []
+    for key, label, capital in profiles:
+        replay.progress(f"Schnelldurchlauf Trendfolge {label}")
+        eq, trades, log, alloc = run_trend(replay.data, idx[s], idx[e - 1], capital, min_order, cfg)
+        last = {
+            sym: float(df["close"][df.index <= idx[e - 1]].iloc[-1])
+            for sym, df in replay.data.items()
+        }
+        exit_cost = sum(
+            p.units * last[sym] * (cfg.taker_fee + cfg.spread_bps / 2 * 1e-4)
+            for sym, p in alloc.state.positions.items()
+        )
+        rejections = Counter(x["reason"] for x in log if x["status"] == "rejected")
+        bots.append(
+            ScenarioResult(
+                scenario_id=f"sim-trend-{key}",
+                period="simulation",
+                variant="trend",
+                label="Trendfolge SMA 200",
+                kind="bot",
+                profile=key,
+                profile_label=label,
+                capital=capital,
+                start=idx[s],
+                end=idx[e - 1],
+                equity=pd.DataFrame({"equity": eq}),
+                trades=trades,
+                final_equity=float(eq.iloc[-1]) - exit_cost,
+                max_drawdown=max_drawdown(eq, capital),
+                fees_eur=float(sum(t["fees_eur"] for t in trades)),
+                open_positions_end=len(alloc.state.positions),
+                rejections=dict(rejections.most_common(8)),
+            )
+        )
+    bh = replay.baseline(
+        "sim-buy_hold", "simulation", s, e, replay.cfg.profile("eur100"), "buy_hold"
+    )
+    note = (
+        "Feste Regel, nicht an die Daten angepasst: Kauf, wenn der Tagesschluss über dem "
+        "200-Tage-Durchschnitt liegt; Verkauf darunter; Notfall-Stop 20 % unter dem höchsten "
+        "Schluss seit Einstieg. Aufträge als Maker-Limit (0,40 %), sonst Taker (0,80 %). Offene "
+        "Positionen am Ende sind abzüglich Verkaufskosten bewertet."
+    )
+    return SimulationResult(
+        idx[s], idx[e - 1], replay.cfg.timeframe, replay.data_source, bots, bh, [], note
     )
 
 
@@ -196,11 +270,15 @@ def render_html(sim: SimulationResult) -> str:
         )
         or "<tr><td colspan='8'>Keine Trades – der Bot hat in diesem Zeitraum keinen Vorteil nach Kosten gesehen.</td></tr>"
     )
-    decisions = "".join(
-        f"<tr><td>{r.cutoff_ts.date()}</td><td>{len(r.results)}</td>"
-        f"<td>{html.escape(', '.join(r.summary()['confirmed']) or 'keine')}</td>"
-        f"<td>{html.escape(', '.join(f'{k}: {v}' for k, v in sorted(r.summary()['verdicts'].items())))}</td></tr>"
-        for r in sim.research
+    decisions = (
+        "<tr><td colspan='4'>Feste Regel – keine Research, kein Blick in die Zukunft.</td></tr>"
+        if not sim.research
+        else "".join(
+            f"<tr><td>{r.cutoff_ts.date()}</td><td>{len(r.results)}</td>"
+            f"<td>{html.escape(', '.join(r.summary()['confirmed']) or 'keine')}</td>"
+            f"<td>{html.escape(', '.join(f'{k}: {v}' for k, v in sorted(r.summary()['verdicts'].items())))}</td></tr>"
+            for r in sim.research
+        )
     )
     reasons = "".join(
         f"<li>{html.escape(k)} ({v}×)</li>" for k, v in list(main.rejections.items())[:6]
@@ -235,6 +313,7 @@ Daten {html.escape(sim.data_source)} · virtuelles Geld, keine echten Orders</di
 <h2>Jede Entscheidung des Bots ({html.escape(main.profile_label)})</h2>
 <div class="tbl"><table><tr><th>Einstieg</th><th>Ausstieg</th><th>Asset</th><th>Strategie</th>
 <th>Einstiegskurs</th><th>Ausstiegskurs</th><th>Grund</th><th>Netto</th></tr>{trades}</table></div>
+<p class="note">{html.escape(sim.note)}</p>
 <h2>Was der Bot an jedem Prüfzeitpunkt wusste</h2>
 <div class="mut">Research nur mit Kerzen vor dem Datum – die Zukunft war unbekannt.</div>
 <div class="tbl"><table><tr><th>Datum</th><th>geprüft</th><th>bestätigt</th><th>Urteile</th></tr>{decisions}</table></div>

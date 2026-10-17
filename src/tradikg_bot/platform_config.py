@@ -40,6 +40,7 @@ class PlatformConfig:
     log_level: str = "INFO"
     dashboard_port: int = 8501
     local_llm_enabled: bool = False  # optional, standardmäßig aus; nicht implementiert
+    strategy_mode: str = "signals"  # signals = Bracket-Strategien, trend = 200-Tage-Allokation
     home: Path = field(default=DEFAULT_HOME)
 
     def __post_init__(self) -> None:
@@ -47,6 +48,8 @@ class PlatformConfig:
             raise LiveTradingNotAllowedError(
                 f"Modus '{self.mode}' ist gesperrt – die Plattform läuft nur im Paper-Modus."
             )
+        if self.strategy_mode not in ("signals", "trend"):
+            raise ValueError("strategy_mode muss 'signals' oder 'trend' sein")
         if self.capital_eur <= 0:
             raise ValueError("capital_eur muss > 0 sein")
         if not 0 <= self.tax_rate < 1:
@@ -152,4 +155,5 @@ tax_rate = 0.0              # Steuerrücklage (keine steuerliche Beratung)
 log_level = "INFO"
 dashboard_port = 8501
 local_llm_enabled = false   # optional, nicht implementiert
+strategy_mode = "signals"   # "trend" = 200-Tage-Allokation (für 1d gedacht)
 """

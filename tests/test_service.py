@@ -138,3 +138,21 @@ def test_status_file_is_valid_json(tmp_path):
     svc = service(tmp_path, fake)
     svc.run_once()
     json.loads(svc.cfg.status_file.read_text())
+
+
+def test_trend_mode_runs_restarts_and_writes_dashboard_tables(tmp_path):
+    fake = FakeKrakenPublic(NOW, n=400)
+    cfg = config(tmp_path, strategy_mode="trend")
+    svc = PaperService(cfg, api=fake, now=lambda: fake.now)
+    assert svc.run_once()["processed_steps"] == 1
+    assert len(svc.engine.closes["XBTEUR"]) >= 200  # Vorlauf reicht für SMA 200
+    advance(fake, 30)
+    assert svc.run_once()["processed_steps"] == 30
+    state = svc.engine.store.get_json("trend_state")
+    signals = svc.engine.store.conn.execute("SELECT COUNT(*) FROM signals_log").fetchone()[0]
+    rows = svc.engine.store.conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0]
+    assert state is not None and rows == 31 and signals >= 0
+    # Neustart: Zustand wird geladen, nichts doppelt verarbeitet
+    again = PaperService(cfg, api=fake, now=lambda: fake.now)
+    assert again.run_once()["processed_steps"] == 0
+    assert again.engine.alloc.state.to_json() == state
