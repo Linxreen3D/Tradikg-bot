@@ -377,3 +377,42 @@ def test_weekly_stats_counts_flat_weeks_as_not_positive():
     assert w["weeks"] == 3 and w["positive_share"] == pytest.approx(1 / 3)
     assert w["worst_week"] == pytest.approx(101 / 103 - 1)
     assert weekly_stats(eq.iloc[:0], 100.0)["weeks"] == 0
+
+
+def test_simulation_from_past_date_knows_only_the_past(tmp_path):
+    from tradikg_bot.replay.simulate import render_html, simulate
+
+    data = phase_data(n=420)
+    replay = HistoricalReplay(data, tmp_path, ReplayConfig(**FAST), "synthetic", True)
+    idx = replay.plan.index
+    sim = simulate(replay, idx[300], research_every=50, profiles=("eur100", "eur10_pilot"))
+    assert sim.start == idx[300] and sim.end == idx[-1]
+    assert [r.cutoff_ts for r in sim.research] == [idx[300], idx[350], idx[400]]
+    bot = sim.bots[0]
+    assert bot.capital == 100.0 and sim.bots[1].capital == 10.0
+    assert all(pd.Timestamp(t["entry_ts"]) > idx[300] for t in bot.trades)
+    page = render_html(sim)
+    assert "Schnelldurchlauf: Bot ab" in page and "<svg" in page and "Buy &amp; Hold" in page
+    with pytest.raises(ValueError, match="Zu früh"):
+        simulate(replay, idx[10])
+
+
+def test_cli_sim_writes_html(home, tmp_path, capsys):
+    folder = tmp_path / "kraken"
+    folder.mkdir()
+    bars = synthetic_market_phases(n=400, seed=1)
+    rows = np.column_stack(
+        [
+            bars.index.asi8 // 10**9,
+            bars[["open", "high", "low", "close", "volume"]].to_numpy(),
+            np.full(len(bars), 7),
+        ]
+    )
+    pd.DataFrame(rows).to_csv(folder / "AAAEUR_1440.csv", header=False, index=False)
+    assert main(["data", "import-kraken", str(folder), "--symbols", "AAAEUR"]) == 0
+    start = str(bars.index[300].date())
+    args = ["sim", "--start", start, "--symbols", "AAAEUR", "--rules", "example"]
+    assert main(args) == 0
+    out = capsys.readouterr().out
+    assert f"Schnelldurchlauf {start}" in out and "Buy & Hold" in out
+    assert list((home / "reports").glob("sim-*.html"))

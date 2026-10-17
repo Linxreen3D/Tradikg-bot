@@ -298,6 +298,50 @@ def cmd_replay_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sim(args: argparse.Namespace) -> int:
+    from tradikg_bot.replay.simulate import render_html, simulate, summary_rows
+    from tradikg_bot.replay.walkforward import HistoricalReplay, ReplayConfig
+
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    args.source, args.bars = "cache", 0
+    data, source, _ = _load(args, cfg)
+    if not data:
+        print("Keine Daten. Erst `tradikg data fetch-kraken-full` bzw. `fetch-kraken`.")
+        return 1
+    rcfg = ReplayConfig(
+        timeframe=args.timeframe,
+        strategies=tuple(args.strategies.split(",")) if args.strategies else cfg.strategies,
+        rolling_windows=False,
+    )
+    stamp = pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%S")
+    replay = HistoricalReplay(
+        data,
+        cfg.replay_dir / f"sim-{stamp}",
+        rcfg,
+        data_source=source,
+        rules=_rules(args, list(data)),
+        progress=lambda msg: print(f"  … {msg}", flush=True),
+    )
+    try:
+        sim = simulate(replay, args.start, args.end, args.research_every)
+    except ValueError as exc:
+        print(f"Abgebrochen: {exc}")
+        return 1
+    print(f"\nSchnelldurchlauf {sim.start.date()} – {sim.end.date()} ({args.timeframe}):")
+    for r in summary_rows(sim):
+        print(
+            f"  {r['name']:42} {r['start']:8.2f} € -> {r['end']:9.2f} € ({r['ret']:+.1%}) | "
+            f"{r['trades']:3} Trades | Max. DD {r['dd']:+.1%} | Wochen im Plus "
+            f"{r['pos_weeks']:.0%} von {r['weeks']}"
+        )
+    out = cfg.home / "reports" / f"sim-{sim.start.date()}-{stamp}.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render_html(sim))
+    print(f'\nVerlauf als Seite: {out}  (open "{out}")  Keine echten Orders.')
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     def common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--platform-config", help="Pfad zur Plattform-Konfiguration (TOML)")
@@ -341,6 +385,19 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--symbols")
     p.add_argument("--timeframes", default="1d", help="z. B. 1d,1h,15m,5m")
     p.set_defaults(func=cmd_data_quality, platform_cmd=True)
+
+    p = sub.add_parser(
+        "sim", help="Schnelldurchlauf: Bot ab einem vergangenen Datum einsetzen und vorspulen"
+    )
+    common(p)
+    p.add_argument("--start", required=True, help="Einsatzdatum, z. B. 2025-01-01")
+    p.add_argument("--end", help="Enddatum (Standard: letzte verfügbare Kerze)")
+    p.add_argument("--symbols")
+    p.add_argument("--timeframe", default="1d")
+    p.add_argument("--strategies")
+    p.add_argument("--research-every", type=int, default=90, help="Research alle N Kerzen")
+    p.add_argument("--rules", choices=["kraken", "example"], default="kraken")
+    p.set_defaults(func=cmd_sim, platform_cmd=True)
 
     replay = sub.add_parser("replay", help="Historical Market Replay mit Walk-Forward-Tests")
     rs = replay.add_subparsers(dest="replay_cmd", required=True)

@@ -292,3 +292,26 @@ Walk-Forward 1d: **09.12.2018 – 03.03.2024** (Bullen 2019/2021, Corona-Crash 2
 **Paper-Betrieb umgestellt:** `timeframe = "1d"` in `~/.tradikg/config.toml`, 100 € virtuell; alter
 1h-Zustand (0 Trades) nach `~/.tradikg/data/paper-1h-20261017` umbenannt (nicht gelöscht).
 Erste Tagesentscheidung 18.10.2026 00:00 UTC.
+
+## Schnelldurchlauf (`tradikg sim`, Dashboard-Tab „Schnelldurchlauf“)
+
+Bot an einem vergangenen Datum einsetzen: Research nur mit Kerzen davor (alle 90 Kerzen
+wiederholt), dann Kerze für Kerze bis heute mit der Paper-Engine. Ausgabe: HTML-Seite mit
+Kapitalverlauf, jeder Entscheidung und den Research-Ständen (`~/.tradikg/reports/sim-*.html`).
+
+```bash
+tradikg sim --start 2025-10-17 --symbols XBTEUR,ETHEUR,SOLEUR   # 1d, ca. 2,5 min
+```
+
+Ergebnisse 1d, alle Strategien, Gebühren 0,80 %/0,40 %:
+
+| Start | Bot 100 € | Trades (TP/SL) | Max. DD | Wochen im Plus | 10-€-Pilot | Buy & Hold 100 € |
+|---|---|---|---|---|---|---|
+| 17.10.2025 | 93,91 € (−6,1 %) | 6 (0/6) | −7,1 % | 15 % | 7,93 € (−20,7 %) | 66,13 € (−33,9 %) |
+| 17.10.2024 | 93,70 € (−6,3 %) | 17 (4/13) | −8,1 % | 16 % | 8,99 € (−10,1 %) | 88,95 € (−11,1 %) |
+| 01.01.2023 | 97,36 € (−2,6 %) | 37 (14/23) | −8,2 % | 18 % | 10,09 € (+0,9 %) | 543,53 € (+443,5 %) |
+
+Der Bot verliert in allen drei Zeiträumen leicht; er begrenzt Verluste in fallenden Märkten
+(besser als Buy & Hold 2025/26), verpasst aber Aufwärtsphasen fast vollständig. Das
+10-€-Profil schneidet relativ schlechter ab: Kraken-Mindestorder ≈ 4,35 € bedeutet ~45 % des
+Kapitals je Position, dadurch Drawdowns bis −25 %.

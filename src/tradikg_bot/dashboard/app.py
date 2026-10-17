@@ -44,6 +44,7 @@ def main() -> None:
             "AI Research",
             "System Health",
             "Einstellungen",
+            "Schnelldurchlauf",
         ]
     )
     b = q.balances(cfg)
@@ -203,6 +204,39 @@ def main() -> None:
             "eine separate, ausdrückliche Freigabe außerhalb des Dashboards."
         )
         st.caption(f"Stand: {pd.Timestamp.now(tz='UTC'):%Y-%m-%d %H:%M} UTC")
+
+    with tabs[7]:
+        _simulation_tab(cfg)
+
+
+def _simulation_tab(cfg: PlatformConfig) -> None:
+    """Bot ab einem vergangenen Datum einsetzen und vorspulen (ruft `tradikg sim` auf)."""
+    import subprocess
+    import sys
+
+    import streamlit.components.v1 as components
+
+    st.markdown(
+        "Der Bot wird an einem Datum der Vergangenheit eingesetzt, kennt nur die Kerzen davor "
+        "und wird dann im Schnelldurchlauf bis heute simuliert (100 € und 10-€-Pilot, "
+        "virtuell, keine Orders)."
+    )
+    c = st.columns(3)
+    start = c[0].date_input("Startdatum", pd.Timestamp.now().normalize() - pd.DateOffset(years=1))
+    timeframe = c[1].selectbox("Kerzen", ["1d", "4h", "1h"], index=0)
+    every = c[2].number_input("Research alle N Kerzen", 10, 1000, 90)
+    if st.button("Schnelldurchlauf starten"):
+        with st.spinner("Simuliere … (1d: ca. 1–5 Minuten)"):
+            cmd = [sys.executable, "-m", "tradikg_bot", "sim", "--start", str(start)]
+            cmd += ["--timeframe", timeframe, "--research-every", str(every)]
+            done = subprocess.run(cmd, capture_output=True, text=True)
+        st.code(done.stdout[-3000:] + done.stderr[-2000:])
+    pages = sorted((cfg.home / "reports").glob("sim-*.html"), reverse=True)
+    if pages:
+        page = st.selectbox("Gespeicherte Schnelldurchläufe", pages, format_func=lambda p: p.name)
+        components.html(page.read_text(), height=1600, scrolling=True)
+    else:
+        st.info("Noch kein Schnelldurchlauf gespeichert.")
 
 
 main()
