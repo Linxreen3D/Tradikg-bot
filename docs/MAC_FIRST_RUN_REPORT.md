@@ -315,3 +315,45 @@ Der Bot verliert in allen drei Zeiträumen leicht; er begrenzt Verluste in falle
 (besser als Buy & Hold 2025/26), verpasst aber Aufwärtsphasen fast vollständig. Das
 10-€-Profil schneidet relativ schlechter ab: Kraken-Mindestorder ≈ 4,35 € bedeutet ~45 % des
 Kapitals je Position, dadurch Drawdowns bis −25 %.
+
+## Trendfolge-Allokation (18.10.2026, freigegeben)
+
+`strategy_mode = "trend"` (Paper-Dienst) bzw. `tradikg sim --mode trend` (Standard). Feste Regel,
+nicht an Daten angepasst: Kauf, wenn der Tagesschluss über dem SMA 200 liegt; Verkauf darunter;
+Notfall-Stop 20 % unter dem höchsten Schluss seit Einstieg (nachgezogen), danach Sperre bis zum
+nächsten Kreuzen von unten. Aufträge als Maker-Limit zum letzten Schluss (0,40 %), wenn nicht
+erreicht Taker zum nächsten Schluss (0,80 %). BTC/ETH je zur Hälfte, Kraken-Mindestorder beachtet.
+
+Warum: Der Bracket-Bot nutzte im Schnitt nur 6,56 € von 100 € je Trade (1 % Risiko bei weitem
+Stop) und verpasste Aufwärtsphasen. Für Live wäre nur **ein** serverseitiger Stop nötig (Kraken
+`close[ordertype]=stop-loss`), kein SL+TP-OCO.
+
+Schnelldurchlauf bis 16.10.2026 (BTC+ETH, 1d):
+
+| Start | 100 € → | Max. DD | Trades | 10 € → | Buy & Hold 100 € → (Max. DD) |
+|---|---|---|---|---|---|
+| 01.01.2020 | 639,21 € | −32,9 % | 49 | 63,92 € | 1.479,55 € (−75,5 %) |
+| 01.01.2021 | 332,80 € | −32,9 % | 42 | 33,28 € | 326,61 € (−75,0 %) |
+| 01.01.2022 | 222,86 € | −24,7 % | 32 | 26,06 € | 120,44 € (−65,6 %) |
+| 01.01.2023 | 273,99 € | −24,7 % | 26 | 27,40 € | 326,15 € (−56,5 %) |
+| 17.10.2024 | 142,20 € | −24,7 % | 13 | 13,85 € | 101,32 € (−58,5 %) |
+| 17.10.2025 | 97,98 € | −17,4 % | 6 | 11,25 € | 70,33 € (−54,7 %) |
+
+Alle 82 Ein-Jahres-Zeiträume (Start monatlich 01/2019 – 10/2025):
+
+| | im Plus | Median | schlechtester | bester | Ø Max. DD | Monate im Plus |
+|---|---|---|---|---|---|---|
+| Bot 100 € | **76 %** | +25 % | −30 % (Start 12/2021) | +133 % | −24 % | 37 % |
+| Bot 10 € | **83 %** | +22 % | −19 % | +133 % | −21 % | 35 % |
+| Buy & Hold | 67 % | +45 % | −70 % | +1000 % | – | – |
+
+Ehrliche Einordnung: deutlich besser als der Bracket-Bot und mit viel kleineren Einbrüchen als
+Buy & Hold, aber in starken Bullenmärkten hinter Buy & Hold (nur in 39 % der Jahre besser).
+„Wöchentlich im Plus“ ist damit nicht erreichbar (rund ein Drittel der Monate im Plus, der Rest
+flach in Cash oder leicht negativ). Die 200-Tage-Regel ist bekannt und wurde vor dem Einbau kurz
+auf denselben Daten angesehen – kein Parameter wurde optimiert, aber auch das ist keine
+Garantie. Der unabhängige Test ist der Paper-Betrieb ab 18.10.2026. Mit 10 € ist BTC bei hohen
+Kursen teils nicht kaufbar (Mindestorder > 5 €), dann hält der Bot nur ETH.
+
+Paper-Betrieb umgestellt: `strategy_mode = "trend"`, `symbols = ["XBTEUR", "ETHEUR"]`, 1d, 100 €
+virtuell. Vorheriger 1d-Signalzustand (0 Trades) nach `paper-1d-signals-20261018` umbenannt.

@@ -56,6 +56,7 @@ tradikg research report [--run-id N]
 tradikg ml train --source cache
 tradikg data fetch-kraken | fetch-kraken-full | import-kraken <ZIP> | fetch-ccxt | coverage | quality
 tradikg replay run [--no-holdout] [--quick] [--rules kraken] | report    # Walk-Forward-Replay
+tradikg sim --start 2025-01-01 [--mode trend|signals]                   # Schnelldurchlauf ab Datum
 tradikg paper run [--once] | replay --source cache | status | report [--day YYYY-MM-DD]
 tradikg paper kill [--release] | reset-halt --note "Prüfergebnis"
 tradikg kraken market-check | preflight | paper-trade | status   # Kraken-Pilot (Live gesperrt)
