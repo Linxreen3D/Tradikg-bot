@@ -233,3 +233,62 @@ weitere Holdout-Lauf wird als „nicht mehr unangetastet“ markiert.
   `close[…]`-Folgeauftrag, kein serverseitiges SL+TP-Bracket. Ergebnis bleibt
   **NOT LIVE READY**. Alternativen mit API-Bracket (Binance OTOCO, Coinbase Advanced) siehe
   `docs/LIVE_READINESS.md` – nicht geprüft für Österreich.
+
+## Verbesserungen 1–3 (17.10.2026, freigegeben)
+
+### 1. Volle Kraken-Historie für 16 MB statt 9,5 GB
+
+`tradikg data fetch-kraken-full --symbols XBTEUR,ETHEUR,SOLEUR --timeframes 1d,4h,1h` liest per
+HTTP-Range nur das ZIP-Verzeichnis und die gewünschten CSVs aus den 5 Archivteilen (5 s,
+16,2 MB übertragen). Das Archiv reicht bis **30.09.2026**; danach REST-API.
+
+| Asset | 1d | 4h | 1h | ab |
+|---|---|---|---|---|
+| XBTEUR | 4780 | 28530 | 113581 | 10.09.2013 |
+| ETHEUR | 4089 | 24490 | 97089 | 07.08.2015 |
+| SOLEUR | 1948 | 11686 | 46723 | 17.06.2021 |
+
+Qualität: keine ungültigen Kerzen/Duplikate; XBTEUR 2013/14 mit vereinzelten Lücken bis 3 Tage
+(damals wenig Handel). Phasen 1d XBTEUR: Aufwärts 27 %, Abwärts 16 %, Seitwärts 36 %, hohe Vola 17 %.
+
+### 2. Wochenkennzahlen
+
+Replay-Bericht und Dashboard zeigen „Wochen im Plus“, schlechteste und Median-Woche (Woche
+ohne Veränderung zählt nicht als Plus).
+
+### 3. Neue Strategie `regime_breakout` und ehrlicher Test
+
+Trendfolge mit Regimefilter: Long nur, wenn der Schluss über SMA 100/200 liegt und das Hoch der
+letzten 20/55 Kerzen überschritten wird; Stop 3 ATR, Ziel 6 ATR, Ausstieg nur über SL/TP (wie
+Paper/Live). Parameter vorab aus der Literatur festgelegt, nicht auf den Daten optimiert.
+
+Alle Läufe `--no-holdout --rules kraken --quick --no-windows`, Gebühren 0,80 %/0,40 %.
+Walk-Forward 1d: **09.12.2018 – 03.03.2024** (Bullen 2019/2021, Corona-Crash 2020, Bär 2022).
+
+| Lauf | Bot (100 €) | Trades | Max. DD | Wochen im Plus | schlechteste Woche | ohne Filter | Zufall | Buy & Hold |
+|---|---|---|---|---|---|---|---|---|
+| 1d, alle Strategien (#6) | **126,69 €** | 65 | −7,6 % | 32 % von 274 | −2,9 % | 136,16 € | 105,65 € | 2.954,69 € (schlechteste Woche −44 %) |
+| 1d, nur regime_breakout (#7) | **121,04 €** | 40 | −5,5 % | 21 % | −1,8 % | 131,54 € | 105,65 € | 2.954,69 € |
+| 4h, alle Strategien (#8, 11 min) | 98,93 € | 75 | −9,3 % | 15 % | −2,6 % | 97,70 € | 109,23 € | 2.327,41 € |
+
+- In #6 trägt `regime_breakout` am meisten bei (32 Trades, 56 % Treffer, +15,12 €).
+- Research auf der vollen 1d-Historie (Bericht `research-2.md`, Testzeitraum ≈ letzte 20 % =
+  Mitte 2024 – Okt. 2026): **keine Strategie bestätigt**. Gepoolt über alle OOS-Abschnitte ist
+  `regime_breakout` die beste Familie (82 Trades, PF 1,22, Ø +0,12 R), aber **nicht signifikant**
+  (t = 0,85). `momentum_breakout` ist klar negativ (t = −1,77).
+
+**Bewertung (ehrlich):**
+- Erstmals ein positives Walk-Forward-Ergebnis nach allen Kosten, besser als Zufall und Cash, mit
+  kleinem Drawdown. Aber: weit hinter Buy & Hold in diesem Bullenmarkt-Zeitraum, der Netto-EV-
+  Filter kostet hier Rendite (ohne Filter besser), und statistisch nicht gesichert.
+- **„Wöchentlich Plus“ wird nicht erreicht:** 21–32 % der Wochen im Plus, weil der Bot meist in
+  Cash wartet (flache Wochen zählen nicht). Dafür ist die schlechteste Woche nur −1,8 bis −2,9 %.
+- 4h ist schlechter als 1d: mehr Trades, mehr Gebühren (10,65 €), schlechter als Zufall.
+- Transparenz: Die Strategie wurde nach Ansicht der Marktentwicklung 2025/26 entworfen; der
+  Research-Test (2024–2026) überlappt den Replay-Holdout (ab 03/2024). Der Holdout ist daher
+  **nicht mehr vollständig unabhängig**. Der wirklich unabhängige Test ist der Paper-Betrieb
+  ab jetzt.
+
+**Paper-Betrieb umgestellt:** `timeframe = "1d"` in `~/.tradikg/config.toml`, 100 € virtuell; alter
+1h-Zustand (0 Trades) nach `~/.tradikg/data/paper-1h-20261017` umbenannt (nicht gelöscht).
+Erste Tagesentscheidung 18.10.2026 00:00 UTC.

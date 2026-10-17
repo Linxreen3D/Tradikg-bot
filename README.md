@@ -54,7 +54,7 @@ tradikg init | doctor [--network] | backup
 tradikg research run --source kraken|cache|synthetic [--symbols XBTEUR,ETHEUR] [--timeframe 1h]
 tradikg research report [--run-id N]
 tradikg ml train --source cache
-tradikg data fetch-kraken | import-kraken <ZIP> | fetch-ccxt | coverage   # historische Daten
+tradikg data fetch-kraken | fetch-kraken-full | import-kraken <ZIP> | fetch-ccxt | coverage | quality
 tradikg replay run [--no-holdout] [--quick] [--rules kraken] | report    # Walk-Forward-Replay
 tradikg paper run [--once] | replay --source cache | status | report [--day YYYY-MM-DD]
 tradikg paper kill [--release] | reset-halt --note "Prüfergebnis"
