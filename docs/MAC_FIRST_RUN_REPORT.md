@@ -140,7 +140,12 @@ echte Store blieb unberührt), `--quick --no-windows`:
   Zufall 100,27 €. Research bestätigt auch hier keine Strategie.
 - **1h:** weiterhin 0 Trades.
 
-Auch mit halbierten Gebühren also kein positives Ergebnis. Gebühren ×2 (1,6 %) im Standardlauf:
+Zweiter Diagnoselauf mit **0,20 % Taker / 0,10 % Maker** (Grundstufe One Trading laut deren
+Gebührenseite, 17.10.2026): **1d: 9 Trades, 93,90 € (−6,1 %, Max. DD −6,4 %)**; 1h: 0 Trades.
+
+Auch mit halbierten oder geviertelten Gebühren also kein positives Ergebnis – niedrigere
+Gebühren lassen mehr Signale durch, die dann Geld verlieren. Die Strategien selbst haben auf
+diesen Daten keinen Vorteil. Gebühren ×2 (1,6 %) im Standardlauf:
 0 Trades.
 
 ### Belastbarkeits-Checkliste (alle Läufe)
@@ -188,6 +193,14 @@ weitere Holdout-Lauf wird als „nicht mehr unangetastet“ markiert.
   `tradikg paper run --once` nahm die Sperre nicht und lief parallel zum Dienst (Gefahr
   doppelter Verarbeitung). Jetzt abgelehnt mit Exit-Code 1; Test
   `test_paper_run_once_is_refused_while_service_holds_the_lock`.
+- **Signale mit Ablehnungsgrund:** erster Durchgang 17:00:20 UTC (Kerze 16:00): 3 Signale
+  (mean_reversion XBT/ETH/SOL, Regime „range“), alle abgelehnt: „Netto-EV −0,54 bis −0,62 R nach
+  Kosten < 0,02 (prior, keine OOS-Belege)“ – sichtbar in `signals_log` und im Dashboard.
+- **Neustart ohne Doppelverarbeitung:** `stop_bot.sh` → `start_bot.sh`: vorher und nachher 302
+  verarbeitete Kerzen (alle eindeutig), 3 Signale; geordnetes Beenden im Log, kein erneuter
+  Vorlauf.
+- **Ohne Claude-Sitzung:** der Dienst läuft per `nohup` unabhängig vom Terminal weiter – aber nur,
+  solange der Mac wach ist (siehe Phase G).
 - **Backup/Wiederherstellung:** `tradikg backup` (69 Datenbanken, 93 MB) in eine Kopie
   zurückgespielt: `integrity_check` ok für market/research/paper/replays, Daten lesbar.
 - Verbindungsausfall (WLAN aus): **nicht geprüft** – braucht deine Zustimmung. Die Logik ist
