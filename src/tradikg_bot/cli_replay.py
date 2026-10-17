@@ -325,7 +325,13 @@ def cmd_sim(args: argparse.Namespace) -> int:
     )
     try:
         if args.mode == "trend":
-            sim = simulate_trend(replay, args.start, args.end)
+            sim = simulate_trend(
+                replay,
+                args.start,
+                args.end,
+                invest_fraction=args.invest_fraction or cfg.invest_fraction,
+                cash_yield_pa=cfg.cash_yield_pa if args.cash_yield is None else args.cash_yield,
+            )
         else:
             sim = simulate(replay, args.start, args.end, args.research_every)
     except ValueError as exc:
@@ -405,6 +411,8 @@ def register(sub: argparse._SubParsersAction) -> None:
         default="trend",
         help="trend = 200-Tage-Allokation (Standard), signals = Strategie-Signale mit Research",
     )
+    p.add_argument("--invest-fraction", type=float, help="trend: max. investierter Anteil (0–1)")
+    p.add_argument("--cash-yield", type=float, help="trend: Cash-Zins p.a., z. B. 0.02")
     p.add_argument("--rules", choices=["kraken", "example"], default="kraken")
     p.set_defaults(func=cmd_sim, platform_cmd=True)
 

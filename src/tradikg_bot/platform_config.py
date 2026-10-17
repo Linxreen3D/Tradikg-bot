@@ -41,6 +41,8 @@ class PlatformConfig:
     dashboard_port: int = 8501
     local_llm_enabled: bool = False  # optional, standardmäßig aus; nicht implementiert
     strategy_mode: str = "signals"  # signals = Bracket-Strategien, trend = 200-Tage-Allokation
+    invest_fraction: float = 1.0  # trend: höchstens investierter Kapitalanteil (Risikoregler)
+    cash_yield_pa: float = 0.0  # trend: Zins auf Cash, nur wenn er tatsächlich gezahlt wird
     home: Path = field(default=DEFAULT_HOME)
 
     def __post_init__(self) -> None:
@@ -50,6 +52,10 @@ class PlatformConfig:
             )
         if self.strategy_mode not in ("signals", "trend"):
             raise ValueError("strategy_mode muss 'signals' oder 'trend' sein")
+        if not 0 < self.invest_fraction <= 1:
+            raise ValueError("invest_fraction muss in (0, 1] liegen")
+        if not 0 <= self.cash_yield_pa < 0.2:
+            raise ValueError("cash_yield_pa muss in [0, 0.2) liegen")
         if self.capital_eur <= 0:
             raise ValueError("capital_eur muss > 0 sein")
         if not 0 <= self.tax_rate < 1:
@@ -156,4 +162,6 @@ log_level = "INFO"
 dashboard_port = 8501
 local_llm_enabled = false   # optional, nicht implementiert
 strategy_mode = "signals"   # "trend" = 200-Tage-Allokation (für 1d gedacht)
+invest_fraction = 1.0       # trend: max. investierter Anteil (0.5 = halbes Risiko)
+cash_yield_pa = 0.0         # trend: Zins auf Cash (nur wenn real gezahlt)
 """

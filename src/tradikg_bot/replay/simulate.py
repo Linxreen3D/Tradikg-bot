@@ -92,6 +92,8 @@ def simulate_trend(
         ("eur100", "100 €", 100.0),
         ("eur10", "10 € (Größe eines ersten Echtgeld-Tests)", 10.0),
     ),
+    invest_fraction: float = 1.0,
+    cash_yield_pa: float = 0.0,
 ) -> SimulationResult:
     """Schnelldurchlauf der Trendfolge-Allokation (feste 200-Tage-Regel, keine Research)."""
     from tradikg_bot.trading.allocation import TrendConfig, run_trend
@@ -99,7 +101,7 @@ def simulate_trend(
     idx = replay.plan.index
     s = int(idx.searchsorted(_utc(start)))
     e = len(idx) if end is None else int(idx.searchsorted(_utc(end), "right"))
-    cfg = TrendConfig()
+    cfg = TrendConfig(invest_fraction=invest_fraction, cash_yield_pa=cash_yield_pa)
     if s < cfg.sma or e - s < 2:
         raise ValueError(f"Zu früh oder zu kurz: vor dem Start braucht die Regel {cfg.sma} Kerzen.")
     rules = replay.rules
@@ -148,7 +150,8 @@ def simulate_trend(
         "Feste Regel, nicht an die Daten angepasst: Kauf, wenn der Tagesschluss über dem "
         "200-Tage-Durchschnitt liegt; Verkauf darunter; Notfall-Stop 20 % unter dem höchsten "
         "Schluss seit Einstieg. Aufträge als Maker-Limit (0,40 %), sonst Taker (0,80 %). Offene "
-        "Positionen am Ende sind abzüglich Verkaufskosten bewertet."
+        "Positionen am Ende sind abzüglich Verkaufskosten bewertet. "
+        f"Höchstens investiert: {invest_fraction:.0%} des Kapitals; Cash-Zins: {cash_yield_pa:.1%} p.a."
     )
     return SimulationResult(
         idx[s], idx[e - 1], replay.cfg.timeframe, replay.data_source, bots, bh, [], note

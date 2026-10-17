@@ -61,10 +61,11 @@ class PaperService:
         rules = self._rules()
         self.errors: dict[str, str] = {}
         if cfg.strategy_mode == "trend":
-            from tradikg_bot.trading.allocation import TrendPaperEngine
+            from tradikg_bot.trading.allocation import TrendConfig, TrendPaperEngine
 
+            tcfg = TrendConfig(invest_fraction=cfg.invest_fraction, cash_yield_pa=cfg.cash_yield_pa)
             self.engine = TrendPaperEngine(
-                PaperPaths(cfg.paper_dir), rules, cfg.capital_eur, cfg.timeframe, cfg.tax_rate
+                PaperPaths(cfg.paper_dir), rules, cfg.capital_eur, cfg.timeframe, cfg.tax_rate, tcfg
             )
             self.log.info("Modus: Trendfolge-Allokation (SMA 200) für %s", self.symbols)
             return

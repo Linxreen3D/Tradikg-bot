@@ -99,3 +99,30 @@ def test_state_survives_json_roundtrip():
     assert TrendAllocator(["AAA"], 100.0, no_min, CFG, clone).equity(
         {"AAA": 13.0}
     ) == pytest.approx(alloc.equity({"AAA": 13.0}))
+
+
+def test_invest_fraction_halves_position_and_cash_yield_accrues():
+    from dataclasses import replace
+
+    df = frame([(10, 10, 10, 10)] * 3 + [(10, 12, 10, 12), (12, 13, 11.5, 13)])
+    _, _, _, full = run(df)
+    half = run_trend(
+        {"AAA": df}, df.index[0], None, 100.0, no_min, replace(CFG, invest_fraction=0.5)
+    )[3]
+    assert half.state.positions["AAA"].units == pytest.approx(full.state.positions["AAA"].units / 2)
+    flat = frame([(10, 10, 10, 10)] * 365)  # nie über SMA → nur Cash
+    rich = run_trend(
+        {"AAA": flat}, flat.index[0], None, 100.0, no_min, replace(CFG, cash_yield_pa=0.02)
+    )
+    assert rich[0].iloc[-1] == pytest.approx(100 * (1 + 0.02 / 365) ** 365)
+    assert run(flat)[0].iloc[-1] == 100.0  # ohne Zins bleibt Cash exakt gleich
+
+
+def test_platform_config_validates_trend_risk_settings():
+    from tradikg_bot.platform_config import PlatformConfig
+
+    with pytest.raises(ValueError):
+        PlatformConfig(invest_fraction=0)
+    with pytest.raises(ValueError):
+        PlatformConfig(cash_yield_pa=0.5)
+    assert PlatformConfig(invest_fraction=0.5).invest_fraction == 0.5

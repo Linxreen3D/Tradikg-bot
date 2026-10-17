@@ -37,6 +37,10 @@ class TrendConfig:
     taker_fee: float = KRAKEN_SPOT_TAKER
     spread_bps: float = 10.0
     stop_slippage_bps: float = 50.0
+    invest_fraction: float = 1.0  # Risikoregler: Anteil des Kapitals, der höchstens investiert wird
+    cash_yield_pa: float = (
+        0.0  # Zins auf nicht investiertes Geld – nur setzen, wenn er real gezahlt wird
+    )
 
 
 @dataclass
@@ -104,6 +108,7 @@ class TrendAllocator:
         Rückgabe: (geschlossene Trades, Signal-Protokoll).
         """
         st, cfg, half = self.state, self.cfg, self.cfg.spread_bps / 2 * 1e-4
+        st.cash *= 1 + cfg.cash_yield_pa / 365  # tägliche Verzinsung des Cash-Anteils (1d)
         closed: list[dict[str, Any]] = []
         log: list[dict[str, Any]] = []
         for sym in self.symbols:
@@ -157,7 +162,8 @@ class TrendAllocator:
                     why = block_entries or "Sperre nach Notfall-Stop"
                     log.append(self._log(ts, sym, sma, bar.close, "rejected", why))
                     continue
-                eur = min(self.equity(_last(closes)) / len(self.symbols), st.cash)
+                slot = self.equity(_last(closes)) * cfg.invest_fraction / len(self.symbols)
+                eur = min(slot, st.cash)
                 need = self.min_order(sym, bar.close) * (1 + cfg.taker_fee)
                 if eur < need:
                     log.append(
@@ -245,7 +251,15 @@ class TrendPaperEngine:
     (equity, trade_analysis, signals_log, ledger_entries) wie der Bracket-Kreislauf – das
     Dashboard zeigt beides gleich an. Zustand als JSON im Paper-Store (neustartfest)."""
 
-    def __init__(self, paths, rules: dict[str, Any], capital: float, timeframe: str, tax_rate=0.0):
+    def __init__(
+        self,
+        paths,
+        rules: dict[str, Any],
+        capital: float,
+        timeframe: str,
+        tax_rate: float = 0.0,
+        cfg: TrendConfig | None = None,
+    ):
         from tradikg_bot.trading.engine import KillSwitch, PaperEngineConfig
         from tradikg_bot.trading.ledger import CapitalLedger
         from tradikg_bot.trading.store import PaperStore
