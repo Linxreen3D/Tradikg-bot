@@ -11,6 +11,7 @@ from tradikg_bot.dashboard import queries as q
 from tradikg_bot.platform_config import PlatformConfig
 from tradikg_bot.trading.runner import PaperPaths, open_engine, replay
 
+from helpers import MECHANICS_FEES
 from test_paper_engine import FixedProbability, ScriptedSource, bars_frame
 
 APP = Path(__file__).resolve().parents[1] / "src" / "tradikg_bot" / "dashboard" / "app.py"
@@ -31,6 +32,7 @@ def populated(tmp_path):
         FixedProbability(),
         ScriptedSource({data.index[15]}),
         PaperEngineConfig(capital_eur=cfg.capital_eur, min_history_bars=10),
+        fees=MECHANICS_FEES,
     )
     replay(engine, {"AAAEUR": data})
     return cfg, engine

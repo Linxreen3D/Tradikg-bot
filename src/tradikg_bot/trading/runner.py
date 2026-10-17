@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from tradikg_bot.costs import KRAKEN_SPOT_MAKER, KRAKEN_SPOT_TAKER
 from tradikg_bot.live.config import LiveRiskConfig
 from tradikg_bot.live.journal import ExecutionJournal
 from tradikg_bot.live.models import FeeRates, PairRules
@@ -32,7 +33,9 @@ from tradikg_bot.trading.probability import ProbabilityModel
 from tradikg_bot.trading.sources import SignalSource
 from tradikg_bot.trading.store import PaperStore
 
-DEFAULT_PAPER_FEES = FeeRates(0.004, 0.0025, "Annahme: Kraken-Pro-Grundstufe (nicht verifiziert)")
+DEFAULT_PAPER_FEES = FeeRates(
+    KRAKEN_SPOT_TAKER, KRAKEN_SPOT_MAKER, "Annahme: Kraken-Pro-Stufe 1 (nicht kontospezifisch)"
+)
 
 
 @dataclass

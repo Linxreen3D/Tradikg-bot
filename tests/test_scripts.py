@@ -19,6 +19,7 @@ REQUIRED = {
     "start_dashboard.sh",
     "run_tests.sh",
     "check_environment.sh",
+    "logs.sh",
 }
 
 

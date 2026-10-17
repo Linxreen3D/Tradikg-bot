@@ -20,6 +20,8 @@ from tradikg_bot.trading.probability import ProbabilityEstimate
 from tradikg_bot.trading.runner import PaperPaths, open_engine, replay
 from tradikg_bot.trading.sources import RawSignal
 
+from helpers import MECHANICS_FEES
+
 
 class FixedProbability:
     def __init__(self, p: float = 0.6):
@@ -69,7 +71,12 @@ CFG = PaperEngineConfig(capital_eur=100.0, min_history_bars=10)
 def make_engine(tmp_path, symbols=("AAAEUR",), source=None, p=0.6, cfg=CFG, price=100.0):
     rules = {s: generic_rules(s, price) for s in symbols}
     return open_engine(
-        PaperPaths(Path(tmp_path)), rules, FixedProbability(p), source or ScriptedSource(), cfg
+        PaperPaths(Path(tmp_path)),
+        rules,
+        FixedProbability(p),
+        source or ScriptedSource(),
+        cfg,
+        fees=MECHANICS_FEES,
     )
 
 

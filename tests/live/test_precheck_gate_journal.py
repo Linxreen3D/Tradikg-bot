@@ -17,6 +17,8 @@ from tradikg_bot.live.models import ExchangeOrder, OrderSide, OrderStatus
 from tradikg_bot.live.paper import PAPER_RULES, PaperExchange
 from tradikg_bot.live.precheck import ExposureUnknownError, current_exposure, plan_trade
 
+from helpers import MECHANICS_FEES
+
 CFG = LiveRiskConfig()
 
 
@@ -39,7 +41,7 @@ def failed(p):
 
 @pytest.fixture
 def paper():
-    ex = PaperExchange()
+    ex = PaperExchange(fees=MECHANICS_FEES)
     ex.set_book("XBTEUR", 60000.0, 60010.0)
     ex.set_book("ETHEUR", 3000.0, 3000.5)
     return ex
@@ -151,7 +153,7 @@ TODAY = dt.date(2026, 10, 17)
 
 
 def live_paper(**kw):
-    p = PaperExchange(native_bracket=True, **kw)
+    p = PaperExchange(native_bracket=True, fees=MECHANICS_FEES, **kw)
     p.is_live = True
     return p
 

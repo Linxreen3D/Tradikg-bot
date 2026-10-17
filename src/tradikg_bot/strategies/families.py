@@ -12,6 +12,8 @@ Familien:
 * volatility – Ausbruch nach Volatilitätskompression (Bollinger-Breite)
 * volume     – volumenbestätigter Ausbruch (relatives Volumen)
 * structure  – Bruch des letzten bestätigten Swing-Hochs (Marktstruktur)
+* regime     – Trendfolge mit Regimefilter (Donchian-Ausbruch nur über langem SMA), für
+               1d/4h gedacht: wenige Trades, weite Ziele, damit Gebühren wenig ins Gewicht fallen
 
 Orderbuch-Ungleichgewichte (Familie F) sind mit kostenlosen historischen Daten
 nicht rückwirkend testbar und daher nicht als Strategie implementiert.
@@ -258,6 +260,38 @@ class StructureBreakStrategy(_ParamStrategy):
         return _signals(bars, entry, exit_, stop, stop * self.p.reward_risk)
 
 
+# -- G. Regime-Trendfolge --------------------------------------------------------------------
+@dataclass(frozen=True)
+class RegimeParams:
+    """Parameter vorab aus der Trendfolge-Literatur festgelegt (Donchian 20/55, SMA 100/200,
+    Stop 3 ATR, Ziel 6 ATR) – **nicht** auf den Kraken-Daten optimiert."""
+
+    regime: int = 200
+    channel: int = 55
+    stop_atr: float = 3.0
+    take_atr: float = 6.0
+
+
+class RegimeBreakoutStrategy(_ParamStrategy):
+    """Long nur im Aufwärtsregime (Schluss über SMA ``regime``) beim Ausbruch über das Hoch der
+    letzten ``channel`` Kerzen. Ausstieg nur über SL/TP – wie im Paper- und Live-Pfad, der
+    nur Brackets kennt; so rechnen Research und Paper-Engine identisch."""
+
+    name, family, Params = "regime_breakout", "regime", RegimeParams
+
+    @property
+    def warmup_bars(self) -> int:
+        return max(self.p.regime, self.p.channel) + 30
+
+    def generate_signals(self, bars: pd.DataFrame) -> pd.DataFrame:
+        c = bars["close"]
+        breakout = c > donchian(bars, self.p.channel)["high"]
+        entry = breakout & ~breakout.shift(1, fill_value=False) & (c > sma(c, self.p.regime))
+        a = atr(bars, 20)
+        no_exit = pd.Series(False, index=bars.index)
+        return _signals(bars, entry, no_exit, a * self.p.stop_atr, a * self.p.take_atr)
+
+
 def _grid(cls, **variants: list[Any]) -> list[Any]:
     """Kartesisches Produkt weniger Parametervarianten."""
     import itertools
@@ -325,6 +359,12 @@ def strategy_registry() -> dict[str, StrategySpec]:
             "structure",
             StructureBreakStrategy,
             _grid(StructureParams, swing_lag=[3, 5], reward_risk=[1.5, 2.0]),
+        ),
+        StrategySpec(
+            "regime_breakout",
+            "regime",
+            RegimeBreakoutStrategy,
+            _grid(RegimeParams, regime=[100, 200], channel=[20, 55]),
         ),
     ]
     return {s.name: s for s in specs}
