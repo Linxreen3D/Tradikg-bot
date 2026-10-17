@@ -342,3 +342,38 @@ def test_cli_data_quality_writes_report(home, tmp_path, capsys):
     assert "Duplikate entfernt: 1" in out and "AAAEUR   1h   keine Daten" in out
     (md,) = (home / "reports").glob("data-quality-*.md")
     assert "| AAAEUR | 1d | kraken-ohlcvt | 2 |" in md.read_text()
+
+
+def test_range_file_reads_zip_split_across_parts_like_kraken_full_archive():
+    from tradikg_bot.replay.data import RangeFile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("TIMEANDSALES/XBTEUR_1440.csv", KRAKEN_CSV * 50)
+        zf.writestr("XBTEUR_60.csv", KRAKEN_CSV)
+    blob = buf.getvalue()
+    cuts = [0, 37, len(blob) // 2, len(blob)]  # Teile ungleich groß, Grenzen mitten in Dateien
+    parts = {f"p{i}": blob[a:b] for i, (a, b) in enumerate(zip(cuts[:-1], cuts[1:], strict=True))}
+    calls = []
+
+    def fetch(url, lo, hi):
+        calls.append(url)
+        return parts[url][lo : hi + 1]
+
+    raw = RangeFile([(u, len(b)) for u, b in parts.items()], fetch)
+    data = import_kraken_ohlcvt(io.BufferedReader(raw, 64), ["XBTEUR"], "1d")
+    assert (
+        len(data["XBTEUR"]) == 2 and "Duplikate entfernt: 98" in data["XBTEUR"].attrs["validation"]
+    )
+    assert {"p0", "p1", "p2"} <= set(calls)
+
+
+def test_weekly_stats_counts_flat_weeks_as_not_positive():
+    from tradikg_bot.replay.walkforward import weekly_stats
+
+    idx = pd.date_range("2026-01-05", periods=21, freq="D", tz="UTC")  # Mo, 3 volle Wochen
+    eq = pd.Series([100.0] * 7 + [103.0] * 7 + [101.0] * 7, index=idx)
+    w = weekly_stats(eq, 100.0)
+    assert w["weeks"] == 3 and w["positive_share"] == pytest.approx(1 / 3)
+    assert w["worst_week"] == pytest.approx(101 / 103 - 1)
+    assert weekly_stats(eq.iloc[:0], 100.0)["weeks"] == 0

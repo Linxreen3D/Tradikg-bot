@@ -58,6 +58,30 @@ def cmd_data_import_kraken(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_data_fetch_kraken_full(args: argparse.Namespace) -> int:
+    from tradikg_bot.replay.data import import_kraken_ohlcvt, open_kraken_full_archive
+    from tradikg_bot.storage import SQLiteStore
+
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    symbols = _symbols(args, cfg)
+    store = SQLiteStore(cfg.market_db)
+    archive = open_kraken_full_archive()
+    for tf in args.timeframes.split(","):
+        data = import_kraken_ohlcvt(archive, symbols, tf)
+        for s in symbols:
+            if s not in data:
+                print(f"{s} {tf}: nicht im Komplettarchiv")
+                continue
+            n = store.save_bars(s, tf, data[s], source="kraken-ohlcvt-full")
+            print(
+                f"{s} {tf}: {n} Kerzen ({data[s].index[0].date()} – {data[s].index[-1].date()}) | "
+                f"Import-Bereinigung: {data[s].attrs.get('validation')}"
+            )
+    print(f"Übertragen: {archive.raw.downloaded / 1e6:.1f} MB (Komplettarchiv ≈ 9,5 GB)")
+    return 0
+
+
 def cmd_data_fetch_ccxt(args: argparse.Namespace) -> int:
     from tradikg_bot.data.sources import fetch_crypto_ohlcv
     from tradikg_bot.storage import SQLiteStore
@@ -291,6 +315,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--symbols")
     p.add_argument("--timeframe", default="1d")
     p.set_defaults(func=cmd_data_import_kraken, platform_cmd=True)
+    p = ds.add_parser(
+        "fetch-kraken-full",
+        help="Nur gewünschte CSVs aus dem Kraken-Komplettarchiv per HTTP-Range laden (wenige MB)",
+    )
+    common(p)
+    p.add_argument("--symbols")
+    p.add_argument("--timeframes", default="1d", help="z. B. 1d,4h,1h")
+    p.set_defaults(func=cmd_data_fetch_kraken_full, platform_cmd=True)
     p = ds.add_parser("fetch-ccxt", help="Lange Historie einer anderen Börse via ccxt laden")
     common(p)
     p.add_argument("--exchange", default="binance")

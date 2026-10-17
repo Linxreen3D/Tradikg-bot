@@ -54,15 +54,91 @@ def read_kraken_ohlcvt(source: str | Path | io.IOBase) -> pd.DataFrame:
     return bars
 
 
+KRAKEN_FULL_PARTS = [
+    f"https://assets.kraken.com/marketing/institutions/Kraken_OHLCVT_Full.zip.part{i:02d}"
+    for i in range(5)
+]
+
+
+class RangeFile(io.RawIOBase):
+    """Lesbare, seekbare Sicht auf eine in Teile gesplittete Datei per HTTP-Range.
+
+    Damit liest ``zipfile`` aus dem ~10-GB-Komplettarchiv nur Verzeichnis und gewünschte
+    CSVs (wenige MB) – nichts wird vollständig heruntergeladen.
+    """
+
+    def __init__(self, parts: list[tuple[str, int]], fetch=None) -> None:
+        self.parts, self.size, self.pos = parts, sum(n for _, n in parts), 0
+        self.fetch = fetch or _http_range
+        self.downloaded = 0
+
+    def seekable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.pos
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self.pos, io.SEEK_END: self.size}[whence]
+        self.pos = max(0, base + offset)
+        return self.pos
+
+    def readinto(self, buf) -> int:
+        want = min(len(buf), self.size - self.pos)
+        got, start = 0, 0
+        for url, n in self.parts:
+            if got >= want:
+                break
+            if self.pos + got < start + n:
+                lo = self.pos + got - start
+                hi = min(n, lo + want - got) - 1
+                chunk = self.fetch(url, lo, hi)
+                if len(chunk) != hi - lo + 1:
+                    raise OSError(f"Unvollständige Antwort von {url}")
+                buf[got : got + len(chunk)] = chunk
+                got += len(chunk)
+            start += n
+        self.pos += got
+        self.downloaded += got
+        return got
+
+
+_UA = {"User-Agent": "tradikg-bot/0.1"}  # Standard-UA von urllib wird vom CDN abgelehnt (403)
+
+
+def _http_range(url: str, lo: int, hi: int) -> bytes:
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"Range": f"bytes={lo}-{hi}", **_UA})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        if r.status != 206:
+            raise OSError(f"Server unterstützt keine Range-Anfragen ({r.status})")
+        return r.read()
+
+
+def open_kraken_full_archive(urls: list[str] = KRAKEN_FULL_PARTS) -> io.BufferedReader:
+    """Öffnet das Kraken-Komplettarchiv (Teile à 2 GB) remote; ``zipfile``-tauglich."""
+    import urllib.request
+
+    sizes = []
+    for url in urls:
+        req = urllib.request.Request(url, method="HEAD", headers=_UA)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            sizes.append(int(r.headers["Content-Length"]))
+    return io.BufferedReader(RangeFile(list(zip(urls, sizes, strict=True))), 1 << 20)
+
+
 def import_kraken_ohlcvt(
-    path: str | Path, pairs: list[str], timeframe: str
+    path: str | Path | io.IOBase, pairs: list[str], timeframe: str
 ) -> dict[str, pd.DataFrame]:
-    """Importiert ``<PAIR>_<Minuten>.csv`` aus einem Ordner oder ZIP-Archiv."""
+    """Importiert ``<PAIR>_<Minuten>.csv`` aus einem Ordner, ZIP-Archiv oder ZIP-Dateiobjekt."""
     minutes = INTERVAL_MINUTES[timeframe]
-    path = Path(path)
     wanted = {f"{p}_{minutes}.csv".lower(): p for p in pairs}
     out: dict[str, pd.DataFrame] = {}
-    if path.suffix.lower() == ".zip":
+    if isinstance(path, io.IOBase) or Path(path).suffix.lower() == ".zip":
         with zipfile.ZipFile(path) as zf:
             for name in zf.namelist():
                 pair = wanted.get(Path(name).name.lower())
@@ -70,7 +146,7 @@ def import_kraken_ohlcvt(
                     with zf.open(name) as fh:
                         out[pair] = read_kraken_ohlcvt(io.TextIOWrapper(fh, "utf-8"))
     else:
-        for file in path.glob("*.csv"):
+        for file in Path(path).glob("*.csv"):
             pair = wanted.get(file.name.lower())
             if pair:
                 out[pair] = read_kraken_ohlcvt(file)
