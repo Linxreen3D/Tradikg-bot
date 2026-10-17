@@ -156,3 +156,16 @@ def test_store_and_report_roundtrip(tmp_path, random_walk):
     assert store.report(run_id) == md
     assert not store.results(run_id).empty
     assert np.isfinite(len(store.runs()))
+
+
+def test_regime_breakout_enters_only_above_long_sma_with_wide_target(random_walk):
+    from tradikg_bot.indicators import sma
+
+    strat = REGISTRY["regime_breakout"].build(REGISTRY["regime_breakout"].grid[0])
+    sig = strat.generate_signals(random_walk)
+    entries = sig[sig["entry"]]
+    assert len(entries) > 0 and not sig["exit"].any()  # Ausstieg nur über SL/TP
+    regime = sma(random_walk["close"], strat.p.regime)
+    assert (random_walk["close"][entries.index] > regime[entries.index]).all()
+    ratio = entries["take_profit_distance"] / entries["stop_distance"]
+    assert ratio.round(9).eq(2.0).all()
