@@ -66,7 +66,7 @@ Der Bericht liegt unter `~/.tradikg/reports/replay-<Nr>.md`, alle Zahlen in
 Das Replay nutzt dieselbe `PaperTradingEngine`: Signal zur Schlusskerze, Ausführung
 zur Eröffnung der Folgekerze, Netto-EV-Filter mit OOS-Wahrscheinlichkeiten,
 Positionsgröße über das Risiko je Trade, Mindestvolumen/-wert und Tick-Raster,
-Gebühren (0,40 % Taker / 0,25 % Maker, Annahme), Spread (10 bps), Einstiegs- und
+Gebühren (0,80 % Taker / 0,40 % Maker, Kraken-Pro-Stufe 1, Stand 17.10.2026), Spread (10 bps), Einstiegs- und
 Stop-Slippage, SL/TP je Kerze, Cooldowns, Tagesverlust-Abschaltschwelle und Ledger.
 
 **SL und TP in derselben Kerze:** Die Reihenfolge ist aus OHLC nicht bestimmbar. Der

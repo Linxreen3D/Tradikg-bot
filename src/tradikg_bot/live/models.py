@@ -117,7 +117,7 @@ def _vwap(levels: list[tuple[float, float]], volume: float) -> float | None:
 
 @dataclass(frozen=True)
 class FeeRates:
-    taker: float  # als Anteil, z. B. 0.004 = 0.40 %
+    taker: float  # als Anteil, z. B. 0.008 = 0.80 %
     maker: float
     source: str
 

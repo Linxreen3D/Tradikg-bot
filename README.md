@@ -119,7 +119,7 @@ Ausführlich: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Historical Replay:
 
 | Baustein | Kraken-Annahme (`KRAKEN_SPOT_ASSUMED`, Research + Paper) | Krypto generisch (`CRYPTO_SPOT_DEFAULT`, Sprint-1-Backtest) | Aktien (`STOCK_NEOBROKER_DEFAULT`) |
 |---|---|---|---|
-| Kommission | 0,40 % Taker (Paper: Maker 0,25 % für TP-Limits) | 0,10 % vom Nennwert | 1,00 € fix pro Order |
+| Kommission | 0,80 % Taker (Paper: Maker 0,40 % für TP-Limits; Kraken-Pro-Stufe 1, Stand 17.10.2026) | 0,10 % vom Nennwert | 1,00 € fix pro Order |
 | Spread (gesamt) | 10 bps | 10 bps | 10 bps |
 | Slippage | 5 bps je Marktorder (Stop: 50 bps Annahme im Worst Case) | 5 bps | 5 bps |
 

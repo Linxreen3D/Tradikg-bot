@@ -89,7 +89,7 @@ Holdout und Stresstests hält, lohnt sich weitere Modellierung. Details:
 3. **Kapitalobergrenze Paper** (Standard 100 €) und **Live-Pilot** (fix 10 €).
 4. **Langfristportfolio:** Bleibt es vorerst eine EUR-Buchposition (aktueller Stand)?
 5. **Zeitintervall** des Paper-Betriebs (Standard 1h). Kurze Intervalle verursachen
-   bei Kraken-Gebühren (0,40 % Taker) erfahrungsgemäß mehr Kosten als Vorteil.
+   bei Kraken-Gebühren (0,80 % Taker, Stufe 1) erfahrungsgemäß mehr Kosten als Vorteil.
 
 ## Offen (nicht umgesetzt)
 

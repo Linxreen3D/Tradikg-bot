@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from tradikg_bot.costs import KRAKEN_SPOT_TAKER
 from tradikg_bot.live.models import PairRules
 from tradikg_bot.market.kraken_data import KrakenMarketData, Quote
 
@@ -24,7 +25,7 @@ class ScanConfig:
     capital_eur: float = 100.0
     max_spread_bps: float = 30.0
     min_quote_volume_24h: float = 250_000.0
-    assumed_taker_fee: float = 0.004
+    assumed_taker_fee: float = KRAKEN_SPOT_TAKER
     max_candidates: int | None = None  # Begrenzung der Datenabrufe, KEINE Trade-Grenze
 
 

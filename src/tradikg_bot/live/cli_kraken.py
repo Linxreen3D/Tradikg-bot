@@ -16,6 +16,7 @@ import argparse
 import datetime as dt
 from pathlib import Path
 
+from tradikg_bot.costs import KRAKEN_SPOT_TAKER
 from tradikg_bot.live.config import LiveRiskConfig
 from tradikg_bot.live.executor import LiveExecutor, PlanRejectedError, TradingHaltedError
 from tradikg_bot.live.gate import LiveApproval, LiveTradingBlockedError, check_live_gate
@@ -212,7 +213,7 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     p = ks.add_parser("market-check", help="Öffentliche Marktregeln und Liquidität prüfen")
     p.add_argument("--pair", action="append", default=None)
-    p.add_argument("--assumed-taker", type=float, default=0.004)
+    p.add_argument("--assumed-taker", type=float, default=KRAKEN_SPOT_TAKER)
     p.set_defaults(func=lambda a: cmd_market_check(_pairs_default(a)))
 
     p = ks.add_parser("preflight", help="Konto/Key prüfen (nur lesend) -> LIVE READY?")

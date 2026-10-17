@@ -90,7 +90,7 @@ Take-Profit zum Zielkurs.
 
 **Gebühren:** ausschließlich über `TradeVolume` (privat). `fees` liefert den Taker-,
 `fees_maker` den Maker-Satz des Kontos. Ohne erfolgreiche Abfrage gibt es keine
-Order. Der Paper-Modus nimmt 0,40 % Taker und 0,25 % Maker an (Kraken-Pro-Grundstufe,
+Order. Der Paper-Modus nimmt 0,80 % Taker und 0,40 % Maker an (Kraken-Pro-Stufe 1 laut Gebührenseite, 17.10.2026,
 nicht verifiziert).
 
 ## Was umgesetzt ist (Anforderungen 1–10)
@@ -129,7 +129,7 @@ nicht verifiziert).
 1. **Kein API-Bracket bei Kraken Spot.** Das ist der Hauptblocker (siehe oben).
 2. **Kurslücken.** Ein Stop-Loss kann deutlich unter dem Stoppkurs ausgeführt werden. Ein Test zeigt, dass das Tageslimit von 1 € dabei um etwa 9 % überschritten werden kann. Danach sind weitere Trades gesperrt, verhindern lässt sich die Überschreitung aber nicht.
 3. **Mindestgrößen gegenüber 10 €.** Ein einziger BTC-Trade belegt fast das ganze Budget. Bei 0,5 € maximalem Verlust pro Trade (inkl. Kosten) darf der Stop nur etwa 4 % unter dem Einstieg liegen. ETH ist ausgeschlossen.
-4. **Fixe Kostenquote.** Bei 0,40 % Taker pro Seite und geschätzter Slippage kostet ein Round-Trip etwa 1 %. Das frisst kleine Zielabstände auf. Der Kostenfilter blockiert solche Trades.
+4. **Fixe Kostenquote.** Bei 0,80 % Taker pro Seite und geschätzter Slippage kostet ein Round-Trip etwa 1,8 %. Das frisst kleine Zielabstände auf. Der Kostenfilter blockiert solche Trades.
 5. **Zuordnung der Kraken-Folgeorders.** Wie Kraken automatisch erzeugte Schutzorders in `OpenOrders`/`ClosedOrders` kennzeichnet (Übernahme von `userref`, Verweis auf die Ursprungsorder), ist nicht verifiziert. Das muss vor einer späteren Bracket-Implementierung mit einem echten Konto geprüft werden.
 6. **Berechtigungsprobe.** `WithdrawMethods` gilt als Probe für Auszahlungsrechte. Verlangt Kraken dafür nur *Query Funds*, sperrt das Gate fälschlich (fail-closed, also sicher).
 7. **Nonce bei mehreren Prozessen** mit demselben Key: Es darf nur eine Instanz laufen. Pro Bot wird ein eigener Key empfohlen.

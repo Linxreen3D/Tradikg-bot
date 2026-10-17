@@ -22,7 +22,7 @@ gesperrt. In diesem Sprint wurden keine echten Orders gesendet.
 3. **Kein bestätigter Vorteil auf echten Daten.** Die Research-Engine wurde nur auf
    synthetischen Daten ausgeführt. Ob eine Strategie auf echten Kraken-Daten nach
    Kosten einen Vorteil hat, ist offen.
-4. **Kostenstruktur.** Bei 0,40 % Taker-Gebühr je Seite (Annahme Kraken-Grundstufe) und
+4. **Kostenstruktur.** Bei 0,80 % Taker-Gebühr je Seite (Kraken-Pro-Stufe 1, Stand 17.10.2026) und
    ATR-basierten Stops auf Stundenbasis fressen die Kosten in den Tests regelmäßig
    jeden Vorteil auf. Das ist kein Fehler, sondern ein realistisches Ergebnis.
 

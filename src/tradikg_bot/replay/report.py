@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from tradikg_bot.costs import KRAKEN_SPOT_MAKER, KRAKEN_SPOT_TAKER
 from tradikg_bot.replay.walkforward import (
     ReplayResult,
     ScenarioResult,
@@ -150,7 +151,8 @@ def render_replay_report(result: ReplayResult, holdout_count: int = 0) -> str:
         f"Assets: {', '.join(result.symbols)}",
         f"- Zeitraum: {idx[0].date()} – {idx[-1].date()} ({len(idx)} Kerzen)",
         "- Ausführung: dieselbe Paper-Engine wie im Dauerbetrieb (Signale, Netto-EV-Filter, "
-        "Risiko 1 % je Trade, Mindestordergrößen, Gebühren 0,40 %/0,25 %, Spread 10 bps, "
+        f"Risiko 1 % je Trade, Mindestordergrößen, Gebühren {KRAKEN_SPOT_TAKER:.2%} Taker/"
+        f"{KRAKEN_SPOT_MAKER:.2%} Maker (Kraken-Stufe 1), Spread 10 bps, "
         "Slippage, SL/TP je Kerze, Ledger 33/33/34 nach Verlustaufholung). **Keine echten "
         "Orders.**",
         f"- Handelsregeln (Mindestordergrößen, Tick, Dezimalen): {result.rules_note or '–'}. "

@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from tradikg_bot.cli import main
+from tradikg_bot.costs import KRAKEN_SPOT_TAKER
 from tradikg_bot.live.paper import generic_rules
 from tradikg_bot.replay import walkforward as wf
 from tradikg_bot.replay.data import (
@@ -209,7 +210,8 @@ def test_buy_and_hold_respects_minimum_order_size(tmp_path):
         r2.cfg.profile("eur100"),
         "buy_hold",
     )
-    expected = 100 * (1 - 0.0005) * (1 - 0.004) / ((1 + 0.0005) * (1 + 0.004))
+    fee = KRAKEN_SPOT_TAKER
+    expected = 100 * (1 - 0.0005) * (1 - fee) / ((1 + 0.0005) * (1 + fee))
     assert b2.final_equity == pytest.approx(expected, rel=1e-9)
 
 

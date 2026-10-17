@@ -10,6 +10,7 @@ from tradikg_bot.live.journal import ExecutionJournal, TradeState
 from tradikg_bot.live.models import BracketNotSupportedError, OrderStatus
 from tradikg_bot.live.paper import PaperExchange
 
+from helpers import MECHANICS_FEES
 from live_helpers import make_executor
 
 SL, TP = 58000.0, 64000.0
@@ -20,7 +21,7 @@ def open_(ex, notional=10.0):
 
 
 def test_kraken_like_exchange_refuses_without_creating_anything(journal):
-    paper = PaperExchange()  # Standard = Kraken-Fähigkeiten: kein API-Bracket
+    paper = PaperExchange(fees=MECHANICS_FEES)  # Standard = Kraken-Fähigkeiten: kein API-Bracket
     paper.set_book("XBTEUR", 60000.0, 60010.0)
     with pytest.raises(BracketNotSupportedError):
         open_(make_executor(paper, journal))
@@ -262,7 +263,7 @@ def test_failed_precheck_does_not_consume_approval(paper, journal):
 def test_several_positions_on_different_pairs_are_allowed(journal):
     from tradikg_bot.live.config import LiveRiskConfig
 
-    paper = PaperExchange(native_bracket=True, balances_={"ZEUR": 100.0})
+    paper = PaperExchange(native_bracket=True, balances_={"ZEUR": 100.0}, fees=MECHANICS_FEES)
     paper.set_book("XBTEUR", 60000.0, 60010.0)
     paper.set_book("SOLEUR", 150.0, 150.05)
     cfg = LiveRiskConfig.for_paper(100.0)
@@ -278,7 +279,7 @@ def test_several_positions_on_different_pairs_are_allowed(journal):
 def test_paper_config_is_refused_by_live_gateway(journal):
     from tradikg_bot.live.config import LiveRiskConfig
 
-    paper = PaperExchange(native_bracket=True, balances_={"ZEUR": 100.0})
+    paper = PaperExchange(native_bracket=True, balances_={"ZEUR": 100.0}, fees=MECHANICS_FEES)
     paper.set_book("XBTEUR", 60000.0, 60010.0)
     paper.is_live = True
     ex = make_executor(paper, journal)

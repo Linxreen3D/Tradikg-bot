@@ -58,7 +58,7 @@ und launchd, Dashboard auf dem Mac, Strategien auf echten Marktdaten. Details:
   Paper-Bot handelt nicht – das ist gewollt.
 - Auf synthetischen Daten **mit** eingebautem Vorteil findet die Kette den Vorteil und
   handelt; das prüft nur die Pipeline, nicht echte Märkte.
-- Mit Kraken-Gebühren (Annahme 0,40 % Taker) sind kurze Zeitintervalle in den Tests
+- Mit Kraken-Gebühren (Kraken-Pro-Stufe 1: 0,80 % Taker) sind kurze Zeitintervalle in den Tests
   kostenbedingt fast immer unprofitabel. Ergebnisse auf echten Daten stehen aus.
 - Es gibt keine Renditeversprechen. „bestätigt“ heißt nur: auf ungesehenen Testdaten
   nach Kosten positiv und besser als Zufall.

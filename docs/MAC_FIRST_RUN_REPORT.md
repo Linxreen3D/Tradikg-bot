@@ -65,7 +65,14 @@ angewendet – eine Näherung.
 Projektannahme: **0,40 % Taker / 0,25 % Maker**. Kraken-Gebührenseite
 (kraken.com/features/fee-schedule, Kraken Pro → plattformübergreifende Stufen → Spot-Krypto,
 abgerufen 17.10.2026): Stufe 1 (30-Tage-Volumen < 2.500 USD) **0,80 % Taker / 0,40 % Maker**.
-Die Annahme ist damit doppelt so optimistisch wie die öffentliche Grundstufe. Die Zuordnung
-Tabelle↔Tab wurde aus der Reihenfolge auf der Seite abgeleitet. Kontospezifische Gebühren
-bräuchten einen privaten Schlüssel und wurden nicht abgefragt. Das Replay rechnet eine
-Variante „Gebühren ×2“ mit, die der Grundstufe entspricht.
+Die alte Annahme war damit doppelt so optimistisch wie die öffentliche Grundstufe. Die
+Zuordnung Tabelle↔Tab wurde aus der Reihenfolge auf der Seite abgeleitet. Kontospezifische
+Gebühren bräuchten einen privaten Schlüssel und wurden nicht abgefragt.
+
+**Entscheidung (17.10.2026, vom Nutzer freigegeben):** Standard überall auf Stufe 1
+umgestellt – eine Quelle `costs.fees.KRAKEN_SPOT_TAKER/MAKER` (0,008/0,004) für Research,
+Paper, Replay, Scanner und `kraken market-check`. Mechanik-Tests (Ablauf, OCO, Neustart)
+nutzen bewusst feste Testgebühren (`tests/helpers.MECHANICS_FEES`), damit sie die Abläufe
+und nicht die Gebührenhöhe prüfen; `tests/test_fees.py` sichert die Standardwerte ab.
+Beobachtung dabei: Der synthetische Vorteil im E2E-Test überlebt 0,80 % Taker nicht mehr
+(keine Trades) – ein Hinweis, wie stark Gebühren kleine Vorteile auffressen.
