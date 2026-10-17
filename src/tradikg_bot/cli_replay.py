@@ -53,7 +53,7 @@ def cmd_data_import_kraken(args: argparse.Namespace) -> int:
         n = store.save_bars(s, args.timeframe, data[s], source="kraken-ohlcvt")
         print(
             f"{s} {args.timeframe}: {n} Kerzen importiert ({data[s].index[0].date()} – "
-            f"{data[s].index[-1].date()})"
+            f"{data[s].index[-1].date()}) | Import-Bereinigung: {data[s].attrs.get('validation')}"
         )
     return 0
 
@@ -93,6 +93,61 @@ def cmd_data_coverage(args: argparse.Namespace) -> int:
             f"{c.missing_bars} | Gesamt {c.total_return:+.0%} | Quellen "
             f"{','.join(store.bar_sources(c.symbol, args.timeframe))} | Phasen: {phases}"
         )
+    return 0
+
+
+def cmd_data_quality(args: argparse.Namespace) -> int:
+    import json
+
+    from tradikg_bot.replay.data import quality
+    from tradikg_bot.storage import SQLiteStore
+
+    cfg = _cfg(args)
+    store = SQLiteStore(cfg.market_db)
+    results = []
+    for s in _symbols(args, cfg):
+        for tf in args.timeframes.split(","):
+            bars = store.load_bars(s, tf)
+            if bars.empty:
+                print(f"{s:8} {tf:4} keine Daten")
+                continue
+            q = {"symbol": s, "sources": store.bar_sources(s, tf), **quality(bars, tf)}
+            results.append(q)
+            print(
+                f"{s:8} {tf:4} {q['bars']:6} Kerzen {q['start'][:16]} – {q['end'][:16]} UTC | "
+                f"fehlend {q['missing_bars']} ({q['missing_share']:.1%}), Lücken {q['gap_count']} "
+                f"(max {q['largest_gap']}) | ungültig {q['invalid_rows']} | Duplikate "
+                f"{q['duplicates']} | Volumen 0: {q['zero_volume_bars']} | Ausreißer "
+                f"{q['outlier_count']} | letzte offen: {q['last_bar_incomplete']} | "
+                f"{','.join(q['sources'])}"
+            )
+    if not results:
+        return 1
+    out = cfg.home / "reports"
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
+    (out / f"data-quality-{stamp}.json").write_text(json.dumps(results, indent=2))
+    lines = [
+        f"# Datenqualität ({stamp})",
+        "",
+        "Cache ist beim Import bereinigt (Duplikate/ungültige Kerzen entfernt, siehe Import-"
+        "Ausgabe). Lücken = Intervalle ohne Handel bzw. ohne Daten; sie werden nicht aufgefüllt."
+        " Ausreißer (robuster z-Wert > 8) werden nur gemeldet.",
+        "",
+        "| Symbol | Auflösung | Quelle | Kerzen | Von (UTC) | Bis (UTC) | Fehlend | Lücken | "
+        "Größte Lücke | Ungültig | Volumen 0 | Ausreißer | Letzte offen |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for q in results:
+        lines.append(
+            f"| {q['symbol']} | {q['timeframe']} | {','.join(q['sources'])} | {q['bars']} | "
+            f"{q['start'][:16]} | {q['end'][:16]} | {q['missing_bars']} "
+            f"({q['missing_share']:.1%}) | {q['gap_count']} | {q['largest_gap']} | "
+            f"{q['invalid_rows']} | {q['zero_volume_bars']} | {q['outlier_count']} | "
+            f"{q['last_bar_incomplete']} |"
+        )
+    (out / f"data-quality-{stamp}.md").write_text("\n".join(lines) + "\n")
+    print(f"Bericht: {out / f'data-quality-{stamp}.md'} (+ .json)")
     return 0
 
 
@@ -249,6 +304,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--symbols")
     p.add_argument("--timeframe", default="1d")
     p.set_defaults(func=cmd_data_coverage, platform_cmd=True)
+    p = ds.add_parser("quality", help="Datenqualitätsbericht (Markdown/JSON unter reports/)")
+    common(p)
+    p.add_argument("--symbols")
+    p.add_argument("--timeframes", default="1d", help="z. B. 1d,1h,15m,5m")
+    p.set_defaults(func=cmd_data_quality, platform_cmd=True)
 
     replay = sub.add_parser("replay", help="Historical Market Replay mit Walk-Forward-Tests")
     rs = replay.add_subparsers(dest="replay_cmd", required=True)

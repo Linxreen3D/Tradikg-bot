@@ -49,7 +49,8 @@ def read_kraken_ohlcvt(source: str | Path | io.IOBase) -> pd.DataFrame:
     """Liest eine Kraken-OHLCVT-CSV (ohne Kopfzeile) in das kanonische OHLCV-Format."""
     raw = pd.read_csv(source, header=None, names=KRAKEN_CSV_COLUMNS)
     raw["timestamp"] = raw["timestamp"].astype("int64") * 1000  # Sekunden -> ms
-    bars, _ = validate_ohlcv(raw.drop(columns=["trades"]), timestamp_column="timestamp")
+    bars, report = validate_ohlcv(raw.drop(columns=["trades"]), timestamp_column="timestamp")
+    bars.attrs["validation"] = report.summary()  # Bereinigung beim Import sichtbar machen
     return bars
 
 
@@ -109,6 +110,54 @@ def coverage(data: dict[str, pd.DataFrame], timeframe: str) -> list[Coverage]:
             )
         )
     return out
+
+
+def quality(
+    bars: pd.DataFrame, timeframe: str, now: pd.Timestamp | None = None, outlier_z: float = 8.0
+) -> dict:
+    """Datenqualität einer gespeicherten Reihe (Cache ist bereits beim Import bereinigt).
+
+    Lücken = Intervalle ohne Kerze (bei Kraken: kein Handel). Ausreißer = Log-Renditen mit
+    robustem z-Wert (Median/MAD) über ``outlier_z`` – nur gemeldet, nie entfernt.
+    """
+    step = pd.Timedelta(minutes=INTERVAL_MINUTES[timeframe])
+    now = now or pd.Timestamp.now(tz="UTC")
+    idx = bars.index
+    deltas = idx.to_series().diff().dropna()
+    gaps = deltas[deltas > step]
+    expected = int((idx[-1] - idx[0]) / step) + 1
+    prices = bars[["open", "high", "low", "close"]]
+    invalid = (
+        (prices <= 0).any(axis=1)
+        | (bars["high"] < prices.max(axis=1))
+        | (bars["low"] > prices.min(axis=1))
+        | (bars["volume"] < 0)
+    )
+    r = np.log(bars["close"]).diff().dropna()
+    mad = float((r - r.median()).abs().median()) * 1.4826
+    z = (r - r.median()).abs() / mad if mad > 0 else r * 0
+    outliers = z[z > outlier_z].sort_values(ascending=False)
+    return {
+        "timeframe": timeframe,
+        "bars": len(bars),
+        "start": idx[0].isoformat(),
+        "end": idx[-1].isoformat(),
+        "timezone_utc": str(idx.tz) == "UTC",
+        "duplicates": int(idx.duplicated().sum()),
+        "unsorted": not idx.is_monotonic_increasing,
+        "invalid_rows": int(invalid.sum()),
+        "missing_bars": max(0, expected - len(bars)),
+        "missing_share": round(max(0, expected - len(bars)) / expected, 4),
+        "gap_count": len(gaps),
+        "largest_gap": str(gaps.max()) if len(gaps) else "0",
+        "zero_volume_bars": int((bars["volume"] == 0).sum()),
+        "last_bar_incomplete": bool(idx[-1] + step > now),
+        "outliers": [
+            {"ts": t.isoformat(), "log_return": round(float(r[t]), 5), "z": round(float(v), 1)}
+            for t, v in outliers.head(10).items()
+        ],
+        "outlier_count": len(outliers),
+    }
 
 
 def synthetic_market_phases(

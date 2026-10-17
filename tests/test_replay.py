@@ -312,3 +312,31 @@ def test_cli_data_import_coverage_and_replay(home, tmp_path, capsys):
     assert "bereits 1-mal ausgewertet" in capsys.readouterr().out
     assert main(["replay", "report"]) == 0
     assert "Holdout dieser Daten wurde bereits 2-mal" in capsys.readouterr().out
+
+
+def test_quality_flags_gaps_invalid_outliers_and_open_last_bar():
+    from tradikg_bot.replay.data import quality
+
+    bars = synthetic_market_phases(n=300, seed=4)
+    bars = bars.drop(bars.index[[100, 101]])
+    bars.iloc[150, bars.columns.get_loc("close")] *= 5  # Ausreißer, zugleich high < close
+    bars.iloc[200, bars.columns.get_loc("volume")] = 0
+    q = quality(bars, "1d", now=bars.index[-1] + pd.Timedelta(hours=1))
+    assert q["missing_bars"] == 2 and q["gap_count"] == 1 and q["largest_gap"].startswith("3 days")
+    assert q["invalid_rows"] == 1 and q["zero_volume_bars"] == 1 and q["timezone_utc"]
+    spike = {o["ts"][:10] for o in q["outliers"]}  # Sprung hoch und zurück = 2 Renditen
+    assert {str(bars.index[150].date()), str(bars.index[151].date())} <= spike
+    assert q["last_bar_incomplete"]
+    assert not quality(bars, "1d", now=bars.index[-1] + pd.Timedelta(days=2))["last_bar_incomplete"]
+
+
+def test_cli_data_quality_writes_report(home, tmp_path, capsys):
+    folder = tmp_path / "kraken"
+    folder.mkdir()
+    (folder / "AAAEUR_1440.csv").write_text(KRAKEN_CSV + "1704153600,105,108,101,107,8.0,31\n")
+    assert main(["data", "import-kraken", str(folder), "--symbols", "AAAEUR"]) == 0
+    assert main(["data", "quality", "--symbols", "AAAEUR", "--timeframes", "1d,1h"]) == 0
+    out = capsys.readouterr().out
+    assert "Duplikate entfernt: 1" in out and "AAAEUR   1h   keine Daten" in out
+    (md,) = (home / "reports").glob("data-quality-*.md")
+    assert "| AAAEUR | 1d | kraken-ohlcvt | 2 |" in md.read_text()
