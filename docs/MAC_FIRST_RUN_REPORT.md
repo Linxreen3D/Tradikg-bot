@@ -76,3 +76,88 @@ nutzen bewusst feste Testgebühren (`tests/helpers.MECHANICS_FEES`), damit sie d
 und nicht die Gebührenhöhe prüfen; `tests/test_fees.py` sichert die Standardwerte ab.
 Beobachtung dabei: Der synthetische Vorteil im E2E-Test überlebt 0,80 % Taker nicht mehr
 (keine Trades) – ein Hinweis, wie stark Gebühren kleine Vorteile auffressen.
+
+## Phase D – Erster historischer Test (nur echte Daten, Holdout NICHT ausgewertet)
+
+Alle Läufe: `tradikg replay run --symbols XBTEUR,ETHEUR,SOLEUR --no-holdout --rules kraken`,
+Gebühren 0,80 % Taker / 0,40 % Maker, Spread 10 bps, Standardparameter (4 Folds,
+Holdout 20 %, 50 Zufallsläufe in der Research, min. 150 Kerzen Historie). **Keine Strategie-
+oder Parameteränderung vorgenommen.** Die Walk-Forward-Daten (bis 25.05.2026 bei 1d) sind
+durch das Ansehen dieser Ergebnisse nicht mehr unabhängig; der Holdout (1d: 26.05.–16.10.2026)
+ist unangetastet.
+
+### Tageskerzen (1d, 720 Kerzen, Bericht `replay-2.md`, Laufzeit ca. 1 min)
+
+| Zeitraum | Bot (100 €) | Buy & Hold | Cash | Trades |
+|---|---|---|---|---|
+| Walk-Forward 11.08.2025 – 25.05.2026 | 100,00 € | 52,88 € | 100,00 € | 0 |
+| 5 rollierende Fenster (je ~4,5 Monate) | 100,00 € in allen | 47,05 – 74,30 € (Median 69,55 €) | 100,00 € | 0 |
+
+- **Was wurde aus 100 €?** 100,00 €, netto 0,00 €, **0 Trades**, Drawdown 0 %. Gleiches Bild
+  für 10 €, 10-€-Pilotprofil und 1.000 €.
+- **Warum verworfen?** Alle 93 Signale am Netto-EV-Filter: 85× „keine OOS-Belege“, 8×
+  „Strategie verworfen“. Die Research hat an keinem der 4 Entscheidungszeitpunkte eine
+  Strategie bestätigt (14–20 Hypothesen, 1–7 verworfen).
+- **Welche Strategie hat funktioniert?** Keine wurde out-of-sample bestätigt. Ohne Filter
+  (alle Strategiesignale): 97,26 € bei 7 Trades (−2,7 %). Zufallseinstiege: 100,82 € bei
+  4 Trades (+0,8 %, Zufall).
+- **Kosten / Drawdown / Aufteilung:** 0 € Gebühren, 0 % Drawdown, keine realisierten
+  Gewinne → nichts auf Trading/Rücklage/Langfrist verteilt.
+- **Besser als Buy & Hold?** Ja (100 € vs. 52,88 €) – aber nur, weil der Bot in einem
+  fallenden Markt nicht investiert war. Das ist **keine** nachgewiesene Fähigkeit.
+- **Besser als Zufall?** Nein (100,00 € vs. 100,82 €).
+- **Gebühren ×2 / schlechtere Ausführung / Volatilitätsstress:** jeweils 100,00 €, 0 Trades –
+  ohne Trades nicht aussagekräftig.
+- **Belastbarkeit:** nicht belastbar (u. a. 0 statt ≥ 30 Trades, nicht besser als Zufall).
+
+### Intraday (1h / 15m / 5m) – Berichte `replay-3.md` bis `replay-5.md`
+
+| Auflösung | Lauf | Laufzeit | Walk-Forward | Bot (100 €) | Buy & Hold | ohne Filter | Zufall |
+|---|---|---|---|---|---|---|---|
+| 1h (2606 Kerzen) | `--quick` (mit Fenstern) | 84 s | 13.08. – 25.09.2026 | 100,00 € / 0 Trades | 144,17 € | 100,00 € / 0 | 100,00 € / 0 |
+| 15m (8832) | `--quick --no-windows` | 153 s | 06.08. – 12.09.2026 | 100,00 € / 0 Trades | 128,26 € | 100,00 € / 0 | 100,00 € / 0 |
+| 5m (letzte 8640) | `--quick --no-windows --bars 8640` | 149 s | 12.09. – 24.09.2026 | 100,00 € / 0 Trades | 110,43 € | 100,00 € / 0 | 100,00 € / 0 |
+
+- Research bestätigt an keinem Entscheidungszeitpunkt eine Strategie (je 21 Hypothesen).
+- **Selbst die Baselines ohne Netto-EV-Filter und mit Zufallseinstiegen handeln nicht.**
+  Ablehnungsgründe (1h, 100 €, ohne Filter): 213× „Netto-EV nach Kosten zu klein“, 176×
+  „Chance/Risiko nach Kosten negativ“. Bei 0,80 % je Seite (≥ 1,6 % Round-Trip plus Spread/
+  Slippage) sind die Zielabstände (3 ATR) auf Stunden-/Minutenkerzen kleiner als die Kosten.
+  Das ist ein **struktureller Befund**: Intraday-Handel mit diesen Strategien ist bei
+  Kraken-Stufe-1-Gebühren nicht sinnvoll.
+- Buy & Hold war im Quartal Jul–Sep 2026 klar positiv (+10 bis +44 %). Der Bot hat diese
+  Bewegung nicht mitgenommen – **schlechter als Buy & Hold**.
+- Einschränkung: Intraday-Zeiträume sind kurz (5 Wochen bzw. 12 Tage Bewertung), eine
+  Marktphase. Robustheitsvarianten wurden mit `--quick` ausgelassen (ohne Trades ohnehin
+  ohne Aussage).
+
+### Gebühren-Empfindlichkeit (Diagnose, keine Entscheidung)
+
+Zusatzlauf mit der **alten** Annahme 0,40 %/0,25 % in einem getrennten Datenordner (der
+echte Store blieb unberührt), `--quick --no-windows`:
+
+- **1d:** 3 Trades, **99,12 €** (−0,9 %, Max. DD −0,9 %); ohne Filter 95,82 € (11 Trades),
+  Zufall 100,27 €. Research bestätigt auch hier keine Strategie.
+- **1h:** weiterhin 0 Trades.
+
+Auch mit halbierten Gebühren also kein positives Ergebnis. Gebühren ×2 (1,6 %) im Standardlauf:
+0 Trades.
+
+### Belastbarkeits-Checkliste (alle Läufe)
+
+Nicht belastbar: 0 statt ≥ 30 Trades, nicht besser als Zufall (1d), schlechter als Buy & Hold
+(Intraday), Holdout nicht ausgewertet. **Negatives Ergebnis:** Auf echten Kraken-Daten hat der
+Bot mit den vorhandenen Strategien keinen nachweisbaren Vorteil nach Kosten.
+
+### Vorbereitet: einmaliger Holdout-Lauf (NICHT ausgeführt – wartet auf Freigabe)
+
+```bash
+tradikg replay run --symbols XBTEUR,ETHEUR,SOLEUR --timeframe 1d --rules kraken
+```
+
+Eingefroren: Standardwerte (`--folds 4 --holdout-frac 0.2 --research-random-runs 50
+--min-history-bars 150`), alle Strategien, Gebühren 0,80 %/0,40 %, Spread 10 bps,
+1d-Cache mit genau 720 Kerzen bis 16.10.2026 (Holdout 26.05. – 16.10.2026, 144 Kerzen).
+**Vor dem Lauf kein `data fetch-kraken --timeframe 1d`**, sonst verschieben sich Plan und
+Holdout-Grenzen. Laufzeit ca. 1–2 min. Der Lauf wird je Daten-Fingerabdruck gezählt; jeder
+weitere Holdout-Lauf wird als „nicht mehr unangetastet“ markiert.
