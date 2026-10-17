@@ -357,3 +357,42 @@ Kursen teils nicht kaufbar (Mindestorder > 5 €), dann hält der Bot nur ETH.
 
 Paper-Betrieb umgestellt: `strategy_mode = "trend"`, `symbols = ["XBTEUR", "ETHEUR"]`, 1d, 100 €
 virtuell. Vorheriger 1d-Signalzustand (0 Trades) nach `paper-1d-signals-20261018` umbenannt.
+
+## Ziel „≥ 70 % im Plus, minimales Verlustrisiko“ – Analyse (18.10.2026)
+
+**Zerlegung der Monate (Trendfolge 100 %, 2019–2026):** 28 % reine Cash-Monate (Rendite exakt 0,
+zählen nie als Plus); in investierten Monaten nur 51 % im Plus. Monate im Plus gesamt 37 %.
+
+**Studie mit Trainings-/Testtrennung** (vorab festgelegte 8 Varianten, Auswahl nur auf 2016–2022,
+einmalige Prüfung auf 2023–2026; Code nicht übernommen, nur Ergebnis):
+- Ohne Cash-Zins erreicht keine Variante mehr als 46 % Plus-Monate. Mit 2 % Zins p.a. 66–74 %.
+- Volatilitätssteuerung senkte im Training den Max. DD von −63…−74 % auf −23…−31 %. Ausgewählt
+  wurde „SMA 200 monatlich + Vola-Ziel 25 %“ (78 % Plus-Monate, Max. DD −23 % im Training).
+- **Test 2023–2026: durchgefallen** – 62 % Plus-Monate (mit Zins), nur 38 % der 1-Jahres-Zeiträume im
+  Plus, ≈ 4 % p.a. Der bestehende SMA-200-Bot war im selben Test besser (68 %, +26 % p.a.).
+  Deshalb nicht übernommen.
+
+**Übernommen: Risikoregler `invest_fraction`** (lineare Skalierung, keine Datenanpassung) und
+optionaler `cash_yield_pa` (nur setzen, wenn Zins real gezahlt wird). 82 Ein-Jahres-Zeiträume
+(Start monatlich 01/2019 – 10/2025), 100 €, ohne Zins:
+
+| investiert max | Jahre im Plus | Median-Jahr | schlechtestes Jahr | Ø Max. DD (schlimmster) | schlechtester Monat |
+|---|---|---|---|---|---|
+| 100 % | 76 % | +25 % | −30 % | −24 % (−38 %) | −16 % |
+| 75 % | 76 % | +19 % | −23 % | −19 % (−31 %) | −13 % |
+| **50 %** | **79 %** | **+13 %** | **−16 %** | **−14 % (−24 %)** | **−9 %** |
+| 30 % | 79 % | +8 % | −10 % | −9 % (−16 %) | −6 % |
+
+Monate im Plus bleiben bei ≈ 37 % (mit 2 % Cash-Zins ≈ 62 %) – das Ziel „70 % der *Monate*“ ist mit
+ehrlichen Mitteln nicht erreichbar; „70 % der *12-Monats-Zeiträume*“ ist erreicht.
+
+Schnelldurchlauf mit 50 % bis 16.10.2026: ab 01.12.2021 (schlechtester Startpunkt) 150,00 €
+(Max. DD −18,5 %; Buy & Hold 96,81 €, −71,7 %), ab 2022 160,73 €, ab 2023 177,83 €, ab 17.10.2024
+120,53 €, ab 17.10.2025 99,28 € (−0,7 %, Max. DD −9,0 %; Buy & Hold 70,33 €).
+**10 € bei 50 %:** Anteil 2,50 € liegt unter der Kraken-Mindestorder → kaum handelbar; ein 10-€-Test
+braucht `invest_fraction = 1.0`.
+
+Gefundener Fehler: `TrendPaperEngine` übernahm die konfigurierte `TrendConfig` nicht (Standard
+100 %). Behoben, Test `test_trend_mode_uses_configured_invest_fraction`.
+
+Paper-Betrieb: `invest_fraction = 0.5`, 100 € virtuell, BTC/ETH, 1d (frischer Zustand ab 18.10.2026).

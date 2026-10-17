@@ -275,7 +275,7 @@ class TrendPaperEngine:
             list(rules),
             capital,
             self._min_order,
-            TrendConfig(),
+            cfg or TrendConfig(),
             TrendState.from_json(raw) if raw else None,
         )
         self.min_history = self.alloc.cfg.sma  # Vorlauf beim Erststart

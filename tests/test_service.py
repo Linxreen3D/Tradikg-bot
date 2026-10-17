@@ -156,3 +156,11 @@ def test_trend_mode_runs_restarts_and_writes_dashboard_tables(tmp_path):
     again = PaperService(cfg, api=fake, now=lambda: fake.now)
     assert again.run_once()["processed_steps"] == 0
     assert again.engine.alloc.state.to_json() == state
+
+
+def test_trend_mode_uses_configured_invest_fraction(tmp_path):
+    fake = FakeKrakenPublic(NOW, n=400)
+    cfg = config(tmp_path, strategy_mode="trend", invest_fraction=0.5, cash_yield_pa=0.01)
+    svc = PaperService(cfg, api=fake, now=lambda: fake.now)
+    assert svc.engine.alloc.cfg.invest_fraction == 0.5
+    assert svc.engine.alloc.cfg.cash_yield_pa == 0.01
