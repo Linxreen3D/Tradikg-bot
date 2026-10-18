@@ -29,8 +29,27 @@ nicht jeden Effekt einer echten Ausführung abbilden.
 Volumen“ ([Gebührenseite](https://www.onetrading.com/fees), [Support](https://support.onetrading.com/hc/en-gb/articles/21953902771473-What-fees-can-I-expect-to-pay-for-trading-on-the-Exchange)),
 die API-Dokumentation kennt aber nur die normalen Stufen ([Fee Groups](https://docs.onetrading.com/rest/public/fee-groups)).
 Ob ein Privatkunde diese Konditionen bekommt, steht nirgends. **Das klären wir mit einer Frage
-an den Support – statt zu raten.** Außerdem lieferte die öffentliche Orderbuch-Schnittstelle von
-One Trading heute Nacht nur Fehler; auch das ist zu prüfen.
+an den Support – statt zu raten.**
+
+**Tor 2 gemessen (18.10.2026, öffentliche API `api.onetrading.com/fast/v1`) – NICHT bestanden:**
+
+| Markt | Status | Spread | Umsatz 24 h |
+|---|---|---|---|
+| One Trading BTC_EUR / ETH_EUR (Spot) | **CLOSED** (letzte BTC_EUR-Kerze 18.01.2026) | – | 0 |
+| One Trading BTC_USDC (Spot) | aktiv | 4,0 Bp. | ≈ 650 USDC |
+| One Trading ETH_USDC (Spot) | aktiv | 5,0 Bp. | ≈ 7.400 USDC |
+| One Trading USDC_EUR (Euro-Zugang) | aktiv, aber leeres Orderbuch | – | 0 |
+| One Trading BTC/ETH-Futures (USD) | aktiv | 2,5–3,7 Bp. | 1,4 / 2,1 Mio. USD |
+| Kraken BTC/EUR / ETH/EUR (Spot) | aktiv | 0,01 / 0,19 Bp. | 8,3 / 12,8 Mio. € |
+
+Mindestorder überall 10 (EUR bzw. USDC). Das Orderbuch-Snapshot-Endpoint liefert für jeden Spot-Markt
+nur „Error fetching order book snapshot“ – die Tiefe ist also nicht messbar, beim Tagesumsatz von
+ein paar hundert USDC aber sicher weit unter 5.000 €. One Trading hat den Euro-Spot-Handel offenbar
+eingestellt und setzt auf Futures. Futures (Hebel, Liquidation, andere Gebühren) sind ein anderes
+Produkt als das, was wir getestet haben – darauf übertrage ich die Ergebnisse nicht.
+
+**Folge laut Plan:** Daytrading über One Trading beenden. Die Support-Antwort (Tor 1) ändert daran nur
+etwas, wenn One Trading bestätigt, dass Euro-Spot für Privatkunden per API wieder handelbar ist.
 
 ## 2. Zweite neue Erkenntnis: Funding-Carry (Monate stabil im Plus)
 
@@ -53,7 +72,7 @@ die Short-Seite (Liquidationsrisiko bei starkem Anstieg ohne ausreichend Sicherh
 | # | Was | Wer | Ja-Kriterium (vorher festgelegt) | Wenn Nein |
 |---|---|---|---|---|
 | 1 | One-Trading-Support fragen (Text unten) | **du** (2 Minuten) | Privatkunde bekommt per API ≤ 0,02 % Maker / ≤ 0,03 % Taker | Daytrading endgültig beenden |
-| 2 | One-Trading-Anbindung (nur lesen) + Orderbuch/Spread messen | ich | BTC/EUR- und ETH/EUR-Spread ≤ 5 Bp., Tiefe ≥ 5.000 € | Daytrading beenden |
+| 2 | One-Trading-Anbindung (nur lesen) + Orderbuch/Spread messen – **❌ 18.10.: Euro-Spot geschlossen** | ich | BTC/EUR- und ETH/EUR-Spread ≤ 5 Bp., Tiefe ≥ 5.000 € | Daytrading beenden |
 | 3 | Donchian + VWAP als **Paper-Bot mit One-Trading-Kursen**, 3–4 Wochen | ich baue, Bot läuft | nach ≥ 60 Trades netto im Plus **und** im Rahmen des Schnelldurchlaufs | beenden |
 | 4 | Erst dann kleines Echtgeld bei One Trading | du entscheidest | – | – |
 | 5 | Funding-Carry: Verfügbarkeit Kraken-Futures in deinem Konto prüfen | **du** (Kraken Pro → Futures sichtbar?) | verfügbar, Mindestgröße ≤ 25 € | Idee parken |
