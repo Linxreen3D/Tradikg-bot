@@ -243,11 +243,23 @@ def _simulation_tab(cfg: PlatformConfig) -> None:
         0.005,
         format="%.3f",
     )
-    overview = st.checkbox("Überblick über alle Ein-Jahres-Zeiträume seit 2019", value=True)
+    mode = st.radio(
+        "Strategie",
+        ["trend", "grid"],
+        format_func={
+            "trend": "Trendfolge (Tageskerzen)",
+            "grid": "Grid-Daytrading (Stundenkerzen)",
+        }.get,
+        horizontal=True,
+    )
+    overview = st.checkbox(
+        "Überblick über alle Ein-Jahres-Zeiträume seit 2019 (nur Trendfolge)", value=mode == "trend"
+    )
     if st.button("▶ Neuen Testdurchlauf starten", type="primary"):
         cmd = [sys.executable, "-m", "tradikg_bot", "sim", "--start", str(start)]
         cmd += ["--invest-fraction", str(fraction), "--cash-yield", str(cash_yield)]
-        cmd += ["--overview"] if overview else []
+        cmd += ["--mode", mode, "--timeframe", "1h" if mode == "grid" else "1d"]
+        cmd += ["--overview"] if overview and mode == "trend" else []
         with st.spinner("Simuliere … (meist unter 1 Minute, höchstens 10 Minuten)"):
             try:
                 done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)

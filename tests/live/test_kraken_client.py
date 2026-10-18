@@ -147,7 +147,7 @@ def test_credentials_from_env():
     creds = load_credentials({"KRAKEN_API_KEY": "k", "KRAKEN_API_SECRET": DOC_SECRET})
     assert creds.api_key == "k"
     with pytest.raises(CredentialsError):
-        load_credentials({})
+        load_credentials({}, keychain=lambda account: None)  # nie den echten Schlüsselbund lesen
     with pytest.raises(CredentialsError):
         load_credentials({"KRAKEN_API_KEY": "k", "KRAKEN_API_SECRET": "kein base64!"})
 

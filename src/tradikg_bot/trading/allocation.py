@@ -90,6 +90,9 @@ class TrendAllocator:
         self.state = state or TrendState(cash=capital)
 
     # -- Bewertung -----------------------------------------------------------------------------
+    def open_count(self) -> int:
+        return len(self.state.positions)
+
     def equity(self, closes: dict[str, float]) -> float:
         held = sum(p.units * closes.get(s, p.entry_price) for s, p in self.state.positions.items())
         return self.state.cash + held
@@ -259,6 +262,9 @@ class TrendPaperEngine:
         timeframe: str,
         tax_rate: float = 0.0,
         cfg: TrendConfig | None = None,
+        allocator_factory=None,
+        state_key: str = "trend_state",
+        status: str = "trend",
     ):
         from tradikg_bot.trading.engine import KillSwitch, PaperEngineConfig
         from tradikg_bot.trading.ledger import CapitalLedger
@@ -270,14 +276,18 @@ class TrendPaperEngine:
         self.kill = KillSwitch(paths.kill_switch)
         self.journal = _NoHalt()
         self.rules = rules
-        raw = self.store.get_json("trend_state")
-        self.alloc = TrendAllocator(
-            list(rules),
-            capital,
-            self._min_order,
-            cfg or TrendConfig(),
-            TrendState.from_json(raw) if raw else None,
-        )
+        self.state_key, self.status = state_key, status
+        raw = self.store.get_json(state_key)
+        if allocator_factory is not None:  # z. B. Grid-Daytrading mit derselben Infrastruktur
+            self.alloc = allocator_factory(list(rules), capital, self._min_order, raw)
+        else:
+            self.alloc = TrendAllocator(
+                list(rules),
+                capital,
+                self._min_order,
+                cfg or TrendConfig(),
+                TrendState.from_json(raw) if raw else None,
+            )
         self.min_history = self.alloc.cfg.sma  # Vorlauf beim Erststart
         n = self.alloc.cfg.sma + 10
         self.closes = {s: self.store.bars(s, limit=n)["close"] for s in rules}
@@ -326,7 +336,7 @@ class TrendPaperEngine:
         when = (ts + self.cfg.step).to_pydatetime()
         for t in closed:
             self.ledger.book(
-                f"trend:{t['trade_id']}", t["net_pnl_eur"], when, note=t["exit_reason"]
+                f"{self.status}:{t['trade_id']}", t["net_pnl_eur"], when, note=t["exit_reason"]
             )
             self.store.save_analysis(t["trade_id"], t["exit_ts"], t)
             report.closed.append(t["trade_id"])
@@ -334,10 +344,10 @@ class TrendPaperEngine:
             self.store.log_signal(
                 ts,
                 x["symbol"],
-                STRATEGY,
+                x.get("strategy", STRATEGY),
                 "trend" if x["close"] > x["sma"] else "unter_sma",
                 1.0,
-                f"SMA {self.alloc.cfg.sma} = {x['sma']:.2f}",
+                x.get("ref", f"SMA {self.alloc.cfg.sma} = {x['sma']:.2f}"),
                 0.0,
                 0.0,
                 "accepted" if x["status"] in ("entry", "exit") else x["status"],
@@ -346,14 +356,13 @@ class TrendPaperEngine:
             if x["status"] == "entry":
                 report.new_intents.append(x["symbol"])
         last = {s: float(c.iloc[-1]) for s, c in self.closes.items() if len(c)}
-        held = sum(
-            p.units * last.get(s, p.entry_price) for s, p in self.alloc.state.positions.items()
-        )
+        equity = self.alloc.equity(last)
+        held = equity - self.alloc.state.cash
         b = self.ledger.balances()
         self.store.save_equity(
             ts + self.cfg.step,
             {
-                "equity": self.alloc.equity(last),
+                "equity": equity,
                 "cash": self.alloc.state.cash,
                 "positions_value": held,
                 "trading_balance": b.trading_balance,
@@ -363,11 +372,11 @@ class TrendPaperEngine:
                 "unrecovered": b.unrecovered_losses,
                 "realized_today": 0.0,
                 "unrealized": 0.0,
-                "open_positions": len(self.alloc.state.positions),
-                "status": "trend",
+                "open_positions": self.alloc.open_count(),
+                "status": self.status,
             },
         )
-        self.store.set_json("trend_state", self.alloc.state.to_json())
+        self.store.set_json(self.state_key, self.alloc.state.to_json())
         self.store.mark_step(ts, ts + self.cfg.step)
         return report
 

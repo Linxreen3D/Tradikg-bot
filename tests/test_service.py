@@ -164,3 +164,18 @@ def test_trend_mode_uses_configured_invest_fraction(tmp_path):
     svc = PaperService(cfg, api=fake, now=lambda: fake.now)
     assert svc.engine.alloc.cfg.invest_fraction == 0.5
     assert svc.engine.alloc.cfg.cash_yield_pa == 0.01
+
+
+def test_grid_mode_runs_and_restarts(tmp_path, monkeypatch):
+    fake = FakeKrakenPublic(NOW, n=400)
+    cfg = config(tmp_path, strategy_mode="grid")
+    svc = PaperService(cfg, api=fake, now=lambda: fake.now)
+    monkeypatch.setattr(svc, "_grid_regime", lambda sym, ts: True)
+    assert svc.run_once()["processed_steps"] == 1
+    advance(fake, 24)
+    assert svc.run_once()["processed_steps"] == 24
+    state = svc.engine.store.get_json("grid_state")
+    assert state["refs"] and svc.engine.status == "grid"
+    again = PaperService(cfg, api=fake, now=lambda: fake.now)
+    assert again.run_once()["processed_steps"] == 0
+    assert again.engine.alloc.state.to_json() == state

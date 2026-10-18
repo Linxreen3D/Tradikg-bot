@@ -160,6 +160,75 @@ def simulate_trend(
     )
 
 
+def simulate_grid(
+    replay: HistoricalReplay,
+    daily: dict[str, pd.Series],
+    start: str | pd.Timestamp,
+    end: str | pd.Timestamp | None = None,
+    capital: float = 100.0,
+) -> SimulationResult:
+    """Schnelldurchlauf Grid-Daytrading (feste Einstellungen, Regime aus vergangenen Tagen)."""
+    from tradikg_bot.trading.grid import GridConfig, run_grid
+
+    idx = replay.plan.index
+    s = int(idx.searchsorted(_utc(start)))
+    e = len(idx) if end is None else int(idx.searchsorted(_utc(end), "right"))
+    if e - s < 2:
+        raise ValueError("Zeitraum zu kurz.")
+    rules, cfg = replay.rules, GridConfig()
+    replay.progress("Schnelldurchlauf Grid-Daytrading 100 €")
+    eq, trades, log, alloc = run_grid(
+        replay.data,
+        daily,
+        idx[s],
+        idx[e - 1],
+        capital,
+        lambda sym, px: max(rules[sym].ordermin * px, rules[sym].costmin),
+        cfg,
+    )
+    last = {
+        sym: float(df["close"][df.index <= idx[e - 1]].iloc[-1]) for sym, df in replay.data.items()
+    }
+    exit_cost = sum(
+        lot.units * last[sym] * cfg.taker_fee
+        for sym, d in alloc.state.lots.items()
+        for lot in d.values()
+    )
+    bot = ScenarioResult(
+        scenario_id="sim-grid",
+        period="simulation",
+        variant="grid",
+        label="Grid-Daytrading",
+        kind="bot",
+        profile="eur100",
+        profile_label=f"{capital:.0f} € Grid-Daytrading",
+        capital=capital,
+        start=idx[s],
+        end=idx[e - 1],
+        equity=pd.DataFrame({"equity": eq}),
+        trades=trades,
+        final_equity=float(eq.iloc[-1]) - exit_cost,
+        max_drawdown=max_drawdown(eq, capital),
+        fees_eur=float(sum(t["fees_eur"] for t in trades)),
+        open_positions_end=alloc.open_count(),
+        rejections=dict(
+            Counter(x["reason"] for x in log if x["status"] == "rejected").most_common(8)
+        ),
+    )
+    bh = replay.baseline(
+        "sim-buy_hold", "simulation", s, e, replay.cfg.profile("eur100"), "buy_hold"
+    )
+    note = (
+        f"Grid-Daytrading: Kauf-Limits alle {cfg.spacing:.0%} unter dem Referenzkurs ({cfg.levels} "
+        f"Stufen je Coin), Verkauf {cfg.spacing:.0%} über Kaufpreis (Maker 0,40 %), Notbremse "
+        f"−{cfg.brake:.0%} (Taker 0,80 %), neue Käufe nur bei Tagesschluss über SMA 200. "
+        "Einstellungen auf 2019–2022 gewählt; 2023–2026 ohne belegten Vorteil."
+    )
+    return SimulationResult(
+        idx[s], idx[e - 1], replay.cfg.timeframe, replay.data_source, [bot], bh, [], note
+    )
+
+
 def rolling_overview(
     replay: HistoricalReplay,
     first: str | pd.Timestamp = "2019-01-01",

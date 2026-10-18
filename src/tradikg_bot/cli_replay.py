@@ -299,7 +299,13 @@ def cmd_replay_report(args: argparse.Namespace) -> int:
 
 
 def cmd_sim(args: argparse.Namespace) -> int:
-    from tradikg_bot.replay.simulate import render_html, simulate, simulate_trend, summary_rows
+    from tradikg_bot.replay.simulate import (
+        render_html,
+        simulate,
+        simulate_grid,
+        simulate_trend,
+        summary_rows,
+    )
     from tradikg_bot.replay.walkforward import HistoricalReplay, ReplayConfig
 
     cfg = _cfg(args)
@@ -324,7 +330,13 @@ def cmd_sim(args: argparse.Namespace) -> int:
         progress=lambda msg: print(f"  … {msg}", flush=True),
     )
     try:
-        if args.mode == "trend":
+        if args.mode == "grid":
+            from tradikg_bot.storage import SQLiteStore
+
+            store = SQLiteStore(cfg.market_db)
+            daily = {s: store.load_bars(s, "1d")["close"] for s in data}
+            sim = simulate_grid(replay, daily, args.start, args.end)
+        elif args.mode == "trend":
             sim = simulate_trend(
                 replay,
                 args.start,
@@ -422,9 +434,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--research-every", type=int, default=90, help="Research alle N Kerzen")
     p.add_argument(
         "--mode",
-        choices=["trend", "signals"],
+        choices=["trend", "grid", "signals"],
         default="trend",
-        help="trend = 200-Tage-Allokation (Standard), signals = Strategie-Signale mit Research",
+        help="trend = 200-Tage-Allokation (Standard), grid = Daytrading-Netz (mit --timeframe 1h), "
+        "signals = Strategie-Signale mit Research",
     )
     p.add_argument("--invest-fraction", type=float, help="trend: max. investierter Anteil (0–1)")
     p.add_argument("--cash-yield", type=float, help="trend: Cash-Zins p.a., z. B. 0.02")

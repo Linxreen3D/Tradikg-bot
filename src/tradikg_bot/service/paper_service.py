@@ -60,6 +60,34 @@ class PaperService:
         self.symbols = self._resolve_symbols()
         rules = self._rules()
         self.errors: dict[str, str] = {}
+        if cfg.strategy_mode == "grid":
+            from tradikg_bot.trading.allocation import TrendPaperEngine
+            from tradikg_bot.trading.grid import GridAllocator, GridState, daily_regime
+
+            def factory(symbols, capital, min_order, raw):
+                return GridAllocator(
+                    symbols,
+                    capital,
+                    min_order,
+                    self._grid_regime,
+                    state=GridState.from_json(raw) if raw else None,
+                )
+
+            self._regime_day: str | None = None
+            self._regime = None
+            self.engine = TrendPaperEngine(
+                PaperPaths(cfg.paper_dir),
+                rules,
+                cfg.capital_eur,
+                cfg.timeframe,
+                cfg.tax_rate,
+                allocator_factory=factory,
+                state_key="grid_state",
+                status="grid",
+            )
+            self._daily_regime = daily_regime
+            self.log.info("Modus: Grid-Daytrading (Netz 3 %%, 5 Stufen) für %s", self.symbols)
+            return
         if cfg.strategy_mode == "trend":
             from tradikg_bot.trading.allocation import TrendConfig, TrendPaperEngine
 
@@ -87,6 +115,19 @@ class PaperService:
             ),
         )
         self.errors: dict[str, str] = {}
+
+    def _grid_regime(self, sym: str, ts: pd.Timestamp) -> bool:
+        """Tagesregime (Schluss über SMA 200) – Tageskerzen höchstens einmal je Tag laden."""
+        day = str(ts.date())
+        if self._regime_day != day:
+            for s in self.symbols:
+                try:
+                    self.md.update_cache(s, "1d")
+                except Exception as exc:
+                    self.log.warning("Tageskerzen %s: %s", s, exc)
+            daily = {s: self.market_store.load_bars(s, "1d")["close"] for s in self.symbols}
+            self._regime, self._regime_day = self._daily_regime(daily), day
+        return self._regime(sym, ts)
 
     def _resolve_symbols(self) -> list[str]:
         if not self.cfg.use_scanner:
