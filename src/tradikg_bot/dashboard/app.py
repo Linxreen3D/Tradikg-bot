@@ -269,8 +269,20 @@ def _simulation_tab(cfg: PlatformConfig) -> None:
         (st.success if ok else st.error)("Fertig – Ergebnis unten." if ok else "Fehlgeschlagen.")
         with st.expander("Protokoll"):
             st.code(log)
+    st.markdown(
+        "---\n**Copy-Trading (virtuell):** wertet die gesammelten öffentlichen Solana-Trades aus."
+    )
+    if st.button("▶ Copy-Trading auswerten"):
+        with st.spinner("Werte gesammelte Trades aus …"):
+            cmd = [sys.executable, "-m", "tradikg_bot", "copy", "simulate"]
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        (st.success if done.returncode == 0 else st.error)(
+            done.stdout[-1500:] or done.stderr[-1500:]
+        )
     pages = sorted(
-        (cfg.home / "reports").glob("sim-*.html"), key=lambda p: p.stat().st_mtime, reverse=True
+        [*(cfg.home / "reports").glob("sim-*.html"), *(cfg.home / "reports").glob("copy-*.html")],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
     )
     if not pages:
         st.info("Noch kein Testdurchlauf gespeichert – Knopf oben drücken.")
@@ -279,7 +291,8 @@ def _simulation_tab(cfg: PlatformConfig) -> None:
         "Testdurchläufe (neuester zuerst)",
         pages,
         format_func=lambda p: (
-            f"{dt.datetime.fromtimestamp(p.stat().st_mtime):%d.%m.%Y %H:%M} – Start {p.name[4:14]}"
+            f"{dt.datetime.fromtimestamp(p.stat().st_mtime):%d.%m.%Y %H:%M} – "
+            + ("Copy-Trading" if p.name.startswith("copy-") else f"Start {p.name[4:14]}")
         ),
     )
     components.html(page.read_text(), height=2200, scrolling=True)

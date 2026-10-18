@@ -136,3 +136,21 @@ scripts/run_tests.sh                               # alle Tests
 Quellen Recherche: Shen, Urquhart & Wang (2022) „Bitcoin Intraday Time-Series Momentum“, Financial
 Review; „On the Intraday Behavior of Bitcoin“, Ledger; Theseus-Abschlussarbeit 2025 (Bollinger vs.
 Momentum); Kraken-Gebührenseite und Kraken-API-Doku (AddOrder).
+
+## 9. Nachtrag: Copy-Trading-Simulator (18.10.2026, nur virtuell)
+
+Anlass: Video eines „Copy-Trading-Bots“ (Memecoins auf Solana, 42 $ → 1.885 $ in 24 h, nicht
+überprüfbar). Gebaut wurde ausschließlich ein Simulator – keine Wallet, keine Orders.
+
+- **Sammler** `tradikg copy collect`: alle ~2,5 min die 20 trendenden Solana-Pools und je Pool die letzten
+  300 Trades (mit Wallet-Adresse) von der öffentlichen GeckoTerminal-API in SQLite. Grenze: bei sehr
+  aktiven Pools fehlen Trades zwischen zwei Abrufen (Abdeckung wird im Bericht ausgewiesen).
+- **Simulator** `tradikg copy simulate`: Auswahl des besten Traders nur aus Trades der letzten
+  3 Stunden (≥ 3 abgeschlossene Runden, Ø ≥ 20 $, keine Hochfrequenz-Bots, ROI > 0); jeder Kauf wird mit
+  10 % des Guthabens kopiert, Verkauf mitgemacht, max. 5 Positionen, max. 12 h Haltedauer.
+  Ausführung zum **ersten echten Preis nach der Verzögerung** (Standard 10 s); Kosten: DEX 0,25 %,
+  Copy-Bot 1 % je Seite, 0,01 $ Netz, Preiseinfluss ≈ Ordergröße / (Reserve/2). Feuern nach 2
+  Verlusten in Folge. Vergleich: Trader selbst ohne Verzögerung/Kosten sowie 2/10/30/60 s.
+- Erster Lauf nach ~10 min Sammeln: 100 $ → 99,37 $ bei nur 2 kopierten Trades – noch ohne Aussagekraft.
+- Offene Frage an den Prüfer: Ist dieses Modell (insbesondere Preis nach Verzögerung, Preiseinfluss,
+  Auswahl nach kurzfristigem ROI) realistisch genug, um Copy-Trading von Memecoins fair zu bewerten?
