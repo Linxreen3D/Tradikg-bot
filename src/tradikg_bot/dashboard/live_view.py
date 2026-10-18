@@ -260,8 +260,8 @@ def render(cfg: PlatformConfig) -> None:
         if alt_path.exists():
             a = json.loads(alt_path.read_text())
             st.caption(
-                f"Vergleich gleiche Daten, alte Taktik (beste ROI, alle 30 min): {a['balance']:,.2f} $ "
-                f"({a['pnl']:+,.2f} $, {a['trades']} Trades) – neue Taktik: {bal:,.2f} $."
+                f"Vergleich gleiche Daten, alte Taktik (beste ROI, alle 30 min): {a['balance']:,.2f} USD "
+                f"({a['pnl']:+,.2f} USD, {a['trades']} Trades) – neue Taktik: {bal:,.2f} USD."
             )
         left, right = st.columns([3, 2])
         curve = pd.DataFrame(s.get("curve", []), columns=["ts", "balance"])
