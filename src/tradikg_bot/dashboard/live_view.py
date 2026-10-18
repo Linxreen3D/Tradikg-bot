@@ -42,7 +42,73 @@ def _feed_html(feed: list[dict]) -> str:
     return "".join(rows) or "<div style='opacity:.7'>Noch keine Ereignisse.</div>"
 
 
+COIN = {"XBTEUR": ("XXBT", "BTC"), "ETHEUR": ("XETH", "ETH")}
+
+
+def render_real(cfg: PlatformConfig) -> None:
+    """Echtes Kraken-Guthaben aus dem Snapshot des Echtgeld-Bots (alle 5 min aktualisiert)."""
+    st.markdown("### 💶 Echtgeld bei Kraken · LIVE")
+
+    @st.fragment(run_every=15)
+    def real() -> None:
+        path = cfg.home / "live" / "snapshot.json"
+        if not path.exists():
+            st.info(
+                "Noch kein Kontostand – erscheint nach dem nächsten Durchgang des Echtgeld-Bots "
+                "(nach Neustart mit dem neuen Stand alle 5 min)."
+            )
+            return
+        s = json.loads(path.read_text())
+        bal, prices = s.get("balances", {}), s.get("prices", {})
+        eur = bal.get("ZEUR", {}).get("total", 0.0)
+        eur_held = bal.get("ZEUR", {}).get("held", 0.0)
+        coins, value = [], 0.0
+        for sym, (_asset, name) in COIN.items():
+            st_ = s.get("symbols", {}).get(sym, {})
+            units, px = st_.get("units", 0.0), prices.get(sym) or 0.0
+            value += units * px
+            coins.append((name, units, px, st_))
+        total = eur + value
+        age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(s["updated"])).total_seconds() / 60
+        st.markdown(
+            f"{'🟢' if age < 12 else '🟠'} Stand {pd.Timestamp(s['updated']).tz_convert('Europe/Vienna'):%H:%M:%S} "
+            f"(vor {age:.0f} min)"
+        )
+        c = st.columns(4)
+        c[0].markdown(
+            _card("GESAMTWERT", f"{total:,.2f} €", f"Budget {s.get('budget_eur', 0):.2f} €"),
+            unsafe_allow_html=True,
+        )
+        c[1].markdown(
+            _card("EURO", f"{eur:,.2f} €", f"davon {eur_held:,.2f} € in offenen Kauf-Orders"),
+            unsafe_allow_html=True,
+        )
+        for col, (name, units, px, st_) in zip(c[2:], coins, strict=True):
+            if units > 0:
+                pnl = units * (px - st_.get("entry_price", 0))
+                sub = f"Wert {units * px:,.2f} € · {pnl:+.2f} € · Stop {st_.get('stop_price', 0):,.0f} €"
+                col.markdown(
+                    _card(name, f"{units:.6f}", sub, GREEN if pnl >= 0 else RED),
+                    unsafe_allow_html=True,
+                )
+            elif st_.get("buy_txid"):
+                col.markdown(
+                    _card(
+                        name,
+                        "Kauf-Order offen",
+                        f"{st_.get('buy_eur', 0):.2f} € · Kurs {px:,.2f} €",
+                    ),
+                    unsafe_allow_html=True,
+                )
+            else:
+                col.markdown(_card(name, "–", "keine Position"), unsafe_allow_html=True)
+
+    real()
+
+
 def render(cfg: PlatformConfig) -> None:
+    render_real(cfg)
+    st.divider()
     st.markdown("### 🤖 Copy-Bot · LIVE · virtuell")
     st.caption(
         "Folgt automatisch den 3 besten aktiven Solana-Tradern (Rangliste alle 30 min), kopiert deren "

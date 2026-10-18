@@ -30,6 +30,7 @@ def _paths(cfg: PlatformConfig) -> dict[str, Path]:
         "kill": root / "KILL_SWITCH",
         "log": root / "live.log",
         "lock": root / "live.lock",
+        "snapshot": root / "snapshot.json",
     }
 
 
@@ -68,7 +69,14 @@ def _runner(args: argparse.Namespace, dry_run: bool):
 
     log = _logger(paths["log"])
     runner = LiveTrendRunner(
-        KrakenSpotGateway(client), paths["state"], tcfg, closes, paths["kill"], dry_run, log
+        KrakenSpotGateway(client),
+        paths["state"],
+        tcfg,
+        closes,
+        paths["kill"],
+        dry_run,
+        log,
+        snapshot_path=paths["snapshot"],
     )
     return runner, tcfg, paths, log
 
@@ -124,15 +132,40 @@ def cmd_run(args: argparse.Namespace) -> int:
                 log(f"ABBRUCH: {exc}")
                 return 2
             except Exception as exc:  # Netzwerk o. Ä.: nächster Versuch beim nächsten Durchgang
-                log(f"Fehler im Durchgang (nächster Versuch in 1 h): {exc}")
+                log(f"Fehler im Durchgang (nächster Versuch in 5 min): {exc}")
             if args.once:
                 break
-            stop.wait(3600 - time.time() % 3600 + 120)  # stündlich, 2 min nach voller Stunde
+            stop.wait(300 - time.time() % 300 + 30)  # alle 5 min: Ausführungen, Stops, Tagesregel
     except KeyboardInterrupt:
         pass
     finally:
         lock.release()
         log("Echtbetrieb beendet (Stops bei Kraken bleiben aktiv).")
+    return 0
+
+
+def cmd_buy_now(args: argparse.Namespace) -> int:
+    """Vom Nutzer ausgelöst: wartende Kauf-Limits sofort marktnah kaufen und Stop setzen."""
+    from tradikg_bot.live.trend_live import LiveSafetyError
+    from tradikg_bot.service.ops import AlreadyRunningError, InstanceLock
+
+    if not args.confirm:
+        print(f"Echtgeld! Sofortkauf nur mit {CONFIRM_FLAG}.")
+        return 2
+    runner, _, paths, log = _runner(args, dry_run=False)
+    try:
+        lock = InstanceLock(paths["lock"]).acquire()
+    except AlreadyRunningError:
+        print("Echtgeld-Bot läuft – bitte scripts/live_buy_now.sh nutzen (stoppt, kauft, startet).")
+        return 1
+    try:
+        log("SOFORTKAUF vom Nutzer ausgelöst")
+        runner.buy_now()
+    except LiveSafetyError as exc:
+        log(f"ABBRUCH: {exc}")
+        return 2
+    finally:
+        lock.release()
     return 0
 
 
@@ -186,6 +219,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument(CONFIRM_FLAG, dest="confirm", action="store_true")
     p.add_argument("--once", action="store_true", help="nur ein Durchgang")
     p.set_defaults(func=cmd_run, platform_cmd=True)
+    p = ls.add_parser("buy-now", help="Wartende Kauf-Limits sofort marktnah kaufen + Stop setzen")
+    common(p)
+    p.add_argument(CONFIRM_FLAG, dest="confirm", action="store_true")
+    p.set_defaults(func=cmd_buy_now, platform_cmd=True)
     p = ls.add_parser("status", help="Zustand, Stops und letzte Log-Einträge")
     p.add_argument("--platform-config")
     p.set_defaults(func=cmd_status, platform_cmd=True)

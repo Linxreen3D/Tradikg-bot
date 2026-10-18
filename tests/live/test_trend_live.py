@@ -70,6 +70,9 @@ class FakeKraken:
             price=float(params["price"]) if "price" in params else None,
         )
         self.refs[txid], self.params[txid] = params["userref"], params
+        if params.get("timeinforce") == "IOC":  # sofort zum Ask ausgeführt
+            sym = "XBTEUR" if "XBT" in params["pair"] else "ETHEUR"
+            self.fill(txid, price=self.price[sym] * 1.001)
         if self.unknown_next:
             self.unknown_next = False
             raise OutcomeUnknownError("Timeout nach dem Senden")
@@ -270,3 +273,38 @@ def test_crash_between_send_and_save_does_not_duplicate_order(tmp_path):
     assert len(fake.orders) == 2
     runner(tmp_path, fake, m).run_once()  # Neustart ohne Zustand
     assert len(fake.orders) == 2  # nichts doppelt gesendet, Orders übernommen
+
+
+def test_buy_now_replaces_limit_buys_immediately_and_sets_stop(tmp_path):
+    fake, m = FakeKraken(), Market()
+    m.day(110)
+    r = runner(tmp_path, fake, m)
+    r.snapshot_path = tmp_path / "snap.json"
+    r.run_once()  # wartende Maker-Limits
+    limits = [o for o in fake.open("limit")]
+    assert len(limits) == 2
+    r.buy_now()
+    assert all(fake.orders[o.txid].status == OrderStatus.CANCELED for o in limits)
+    for sym in ("XBTEUR", "ETHEUR"):
+        st = r.state.symbols[sym]
+        assert st.units > 0 and st.buy_txid is None
+        (stop,) = [o for o in fake.open("stop-loss") if o.pair == sym]
+        assert stop.volume == pytest.approx(st.units, rel=1e-6)
+    import json
+
+    snap = json.loads((tmp_path / "snap.json").read_text())
+    assert snap["balances"]["ZEUR"]["total"] < 20 and snap["symbols"]["XBTEUR"]["units"] > 0
+    before = len(fake.orders)
+    r.buy_now()  # zweites Mal: schon gekauft → nichts Neues
+    assert len(fake.orders) == before
+
+
+def test_buy_now_respects_downtrend_and_kill_switch(tmp_path):
+    fake, m = FakeKraken(), Market()
+    m.day(80)  # unter SMA
+    runner(tmp_path, fake, m).buy_now()
+    assert not fake.orders
+    m.day(200)
+    (tmp_path / "KILL").touch()
+    runner(tmp_path, fake, m).buy_now()
+    assert not fake.orders

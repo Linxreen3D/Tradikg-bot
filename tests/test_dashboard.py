@@ -163,3 +163,36 @@ def test_cockpit_renders_without_errors(tmp_path, monkeypatch):
     )
     app.run(timeout=60)
     assert not app.exception
+
+
+def test_live_tab_renders_real_snapshot(tmp_path, monkeypatch):
+    import json
+
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    (tmp_path / "live").mkdir()
+    (tmp_path / "live" / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "updated": "2026-10-18T10:00:00+00:00",
+                "budget_eur": 19.0,
+                "balances": {
+                    "ZEUR": {"total": 9.5, "held": 0.0},
+                    "XXBT": {"total": 0.00013, "held": 0},
+                },
+                "prices": {"XBTEUR": 72500.0, "ETHEUR": 2140.0},
+                "symbols": {
+                    "XBTEUR": {"units": 0.00013, "entry_price": 72460.7, "stop_price": 57968.0},
+                    "ETHEUR": {"buy_txid": "T2", "buy_eur": 9.5},
+                },
+            }
+        )
+    )
+    app = AppTest.from_file(
+        str(Path(__file__).resolve().parents[1] / "src/tradikg_bot/dashboard/app.py")
+    )
+    app.run(timeout=60)
+    assert not app.exception
+    html = " ".join(m.value for m in app.markdown)
+    assert "GESAMTWERT" in html and "Kauf-Order offen" in html and "0.000130" in html

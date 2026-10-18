@@ -112,9 +112,11 @@ class LiveTrendRunner:
         kill_switch: Path,
         dry_run: bool = True,
         log: Callable[[str], None] = print,
+        snapshot_path: Path | None = None,
     ) -> None:
         self.gw, self.cfg, self.closes, self.kill = gateway, cfg, closes, kill_switch
         self.state_path, self.dry_run, self.log = state_path, dry_run, log
+        self.snapshot_path = snapshot_path
         self.state = LiveState.load(state_path)
 
     # -- Kraken-Aufrufe ------------------------------------------------------------------------
@@ -194,6 +196,86 @@ class LiveTrendRunner:
                 self._decide(sym, st, closes, balances)
             self._ensure_stop(sym, st)
             self._save()
+        self._write_snapshot()
+        return self.state
+
+    def _write_snapshot(self) -> None:
+        """Echter Kontostand für das Dashboard (nur lesend; der Schlüssel bleibt im Bot-Prozess)."""
+        if self.dry_run or self.snapshot_path is None:
+            return
+        prices: dict[str, float | None] = {}
+        for sym in self.cfg.symbols:
+            try:
+                prices[sym] = self.gw.order_book(sym, 1).best_bid
+            except Exception:  # Kurs fehlt – Snapshot trotzdem schreiben
+                prices[sym] = None
+        snap = {
+            "updated": pd.Timestamp.now(tz="UTC").isoformat(),
+            "budget_eur": self.cfg.budget_eur,
+            "balances": {
+                a: {"total": b.total, "held": b.held}
+                for a, b in self.gw.balances().items()
+                if b.total
+            },
+            "prices": prices,
+            "symbols": {s: asdict(v) for s, v in self.state.symbols.items()},
+        }
+        tmp = self.snapshot_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(snap, indent=1))
+        tmp.replace(self.snapshot_path)
+
+    def buy_now(self) -> LiveState:
+        """Vom Nutzer ausgelöst: wartendes Kauf-Limit sofort durch einen marktnahen Kauf ersetzen
+        (IOC, Taker) – nur wenn die Regel ohnehin kaufen würde – danach sofort Stop setzen."""
+        if self.gw.has_withdrawal_permission():
+            raise LiveSafetyError(
+                "API-Key hat Auszahlungsrechte – bitte Key ohne Auszahlung anlegen"
+            )
+        balances = self.gw.balances()
+        today = str(pd.Timestamp.now(tz="UTC").date())
+        for sym in self.cfg.symbols:
+            st = self.state.symbols.setdefault(sym, SymbolState())
+            self._sync(sym, st, balances)
+            closes = self.closes(sym)
+            above = len(closes) >= self.cfg.sma and float(closes.iloc[-1]) > float(
+                closes.iloc[-self.cfg.sma :].mean()
+            )
+            if st.units > 0 or not above or st.blocked or self.kill.exists():
+                self.log(f"[JETZT] {sym}: kein Sofortkauf (gekauft, Abwärtstrend, Sperre, Kill)")
+                continue
+            if st.buy_txid:
+                self._cancel_and_settle(sym, st, st.buy_txid, "Sofortkauf statt Limit", buy=True)
+                st.buy_txid = None
+                balances = self.gw.balances()  # stornierte Limits geben das Geld wieder frei
+            rules, book = self.gw.pair_rules(sym), self.gw.order_book(sym, 1)
+            eur_free = balances[rules.quote].available if rules.quote in balances else 0.0
+            eur = min(self.cfg.slot_eur - st.units * st.entry_price, eur_free)
+            price = rules.round_price_up(book.best_ask * 1.005)
+            vol = rules.round_volume_down(eur / (price * (1 + KRAKEN_SPOT_TAKER)))
+            if vol * price < max(rules.ordermin * price, rules.costmin):
+                self.log(f"[JETZT] {sym}: {eur:.2f} € reichen nicht für die Mindestorder")
+                continue
+            st.buy_eur = eur
+            st.buy_txid = self._submit(
+                sym,
+                "buy_fallback",
+                today,
+                {
+                    "type": "buy",
+                    "ordertype": "limit",
+                    "timeinforce": "IOC",
+                    "price": rules.format_price(price),
+                    "volume": rules.format_volume(vol),
+                },
+            )
+            self._save()
+        balances = self.gw.balances()
+        for sym in self.cfg.symbols:  # Ausführung übernehmen und sofort Stop bei Kraken setzen
+            st = self.state.symbols[sym]
+            self._sync(sym, st, balances)
+            self._ensure_stop(sym, st)
+            self._save()
+        self._write_snapshot()
         return self.state
 
     def _sync(self, sym: str, st: SymbolState, balances) -> None:

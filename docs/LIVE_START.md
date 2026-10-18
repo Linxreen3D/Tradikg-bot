@@ -78,3 +78,16 @@ das beim nächsten Durchgang ab und verkauft nie mehr, als er selbst gekauft hat
 - Gebühren laut öffentlicher Kraken-Seite (Stufe 1); dein Konto kann abweichen.
 - Mindestorder BTC 0,00006 BTC (≈ 4,35 € bei 72.500 €): mit 10 € je Coin erst ab einem BTC-Kurs
   von rund 160.000 € ein Problem (wird dann protokolliert, kein Kauf).
+
+## Sofortkauf (ab 18.10.2026)
+
+Wartende Kauf-Limits durch einen sofortigen, marktnahen Kauf ersetzen (Taker 0,80 % statt
+Maker 0,40 %) – nur wenn die Regel ohnehin kaufen würde. Direkt danach setzt der Bot den Stop bei
+Kraken. Das Skript stoppt den Bot, kauft, startet ihn wieder (jetzt mit 5-Minuten-Takt):
+
+```bash
+scripts/live_buy_now.sh 19 1.0
+```
+
+Der Bot schreibt alle 5 Minuten seinen echten Kontostand nach `~/.tradikg/live/snapshot.json`;
+das Dashboard zeigt ihn oben im Tab „🔴 Live-Bot“ („💶 Echtgeld bei Kraken“).
