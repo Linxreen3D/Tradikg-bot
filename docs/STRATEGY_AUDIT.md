@@ -27,7 +27,7 @@ Gefundene Schwachstellen und was damit passiert ist:
 | # | Befund | Schwere | Status |
 |---|---|---|---|
 | A | Echtgeld-Bot: Geht die Zustandsdatei verloren, während Stops bei Kraken offen sind, hätte der Bot beim nächsten Tagessignal **ein zweites Mal gekauft** (Budget doppelt) und die alte Position nicht mehr per Signal verkauft. | hoch (selten) | **behoben im Branch** (Bot hält mit Fehlermeldung an), Test |
-| B | Die 10-%-Tagesverlust-Schwelle gilt nur für den alten Signal-Bot. Der Trend-Bot hat keine Tagesgrenze; sein echtes Risiko ist ≈ 21 % je Position, bei Kurslücke bis ≈ 37 %. | mittel | **Entscheidung von dir** (Punkt 1) |
+| B | Die 10-%-Tagesverlust-Schwelle gilt nur für den alten Signal-Bot. Der Trend-Bot hat keine Tagesgrenze; sein echtes Risiko ist ≈ 21 % je Position, bei Kurslücke bis ≈ 37 %. | mittel | **entschieden**: 100 % bleibt, ≈ 21 % akzeptiert, Grenze gilt nicht für Trendfolge |
 | C | Copy-Simulation nimmt 10 s Verzögerung an; unser Sammler sieht Trades erst nach ≥ 100 s (Median). Damit sinkt das Ergebnis von +3,0 % auf −0,2 %. | hoch für die Aussagekraft | gemessen, Punkt 6 |
 | D | Copy-Simulation: Ausstieg zum letzten bekannten Preis, wenn ein Pool nicht mehr erfasst wird; Rug Pulls, Verkaufssperren und MEV sind nicht modelliert. | mittel | dokumentiert, Kennzahlen im Bericht |
 | E | Trendfolge: Die Sperre „nach Stop erst neues Kreuzen von unten“ hielt den Bot in Bullenjahren fast komplett draußen (2017: 7 % investiert, 2021: 24 %). | Hypothese | **nicht geändert** – nur auf getrennten Daten testen |
@@ -63,7 +63,9 @@ Deine 19 € konkret (Stops 58.451,60 € und 1.725,48 € = je 20 % unter Kauf)
 
 Bei 100 / 500 / 1.000 € skaliert das linear: pessimistisch ≈ 37,5 / 188 / 375 €.
 
-**Zur Entscheidung (nicht umgesetzt – Strategie-Änderung):**
+**Entscheidung des Nutzers (18.10.2026): Option 1.** Der Echtgeld-Bot bleibt zu 100 % investiert; ≈ 21 % Risiko je Position (pessimistisch ≈ 37 % mit Kurslücke) sind bewusst akzeptiert. **Die 10-%-Tagesverlust-Grenze gilt nicht für die Trendfolge**, nur für den Signal-/Bracket-Bot.
+
+Optionen, die zur Wahl standen:
 1. *So lassen*: ≈ 21 % je Position bewusst akzeptieren und die 10-%-Tagesgrenze als „gilt nicht für
    Trendfolge“ dokumentieren.
 2. *Risikoregler 50 %* (`invest_fraction 0.5`): getestet (Max. DD −23,7 %, schlechtestes Jahr −4,9 %),
@@ -229,7 +231,7 @@ bei Kraken schützt weiter. Die einzige Code-Änderung am Echtgeld-Bot ist die P
 | Prio | Maßnahme | Finanzieller Nutzen | Sicherheit | Aufwand | Wer |
 |---|---|---|---|---|---|
 | 1 | Branch mergen und Echtgeld-Bot neu starten (Zustandsverlust-Schutz A) | – | hoch | klein | du (Freigabe) |
-| 2 | Risiko je Position bewusst festlegen: 100 % lassen oder Risikoregler 50 % (B) | Rendite halbiert sich mit | hoch | keiner | du |
+| 2 | ~~Risiko je Position festlegen (B)~~ – erledigt: 100 %, ≈ 21 % akzeptiert | – | – | – | du ✅ |
 | 3 | Copy-Gate (Tag 7) nur mit gemessener Verzögerung und gegen Zufalls-Wallets auswerten (C) | verhindert Fehlentscheidung | mittel | klein (gebaut) | ich, am 25.10. |
 | 4 | Mac nicht schlafen lassen, solange der Bot läuft (Energie-Einstellungen) | kleine | mittel | keiner | du |
 | 5 | Hypothese E auf getrennten Daten testen | möglich, unbewiesen | – | mittel | später |
