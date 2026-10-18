@@ -134,3 +134,32 @@ def test_replay_queries_on_fresh_install_are_empty(tmp_path):
     cfg = PlatformConfig(home=tmp_path / "fresh")
     assert q.replay_runs(cfg).empty and q.replay_run(cfg, 1) is None
     assert q.replay_scenarios(cfg, 1).empty and q.replay_strategy_stats(pd.DataFrame()).empty
+
+
+def test_cockpit_reads_live_state_and_order_limits(tmp_path):
+    import json
+
+    from tradikg_bot.dashboard import cockpit
+    from tradikg_bot.platform_config import PlatformConfig
+
+    cfg = PlatformConfig(home=tmp_path)
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "trend_state.json").write_text(json.dumps({"symbols": {"XBTEUR": {"buy_txid": "T1"}}}))
+    (live / "live.log").write_text(
+        "2026-10-18 01:52:12 UTC  [ORDER] buy XBTEUR 0.00013006 @ 72460.7 → T1\n"
+    )
+    state, limits, log = cockpit._live(cfg)
+    assert state["XBTEUR"]["buy_txid"] == "T1" and limits == {"T1": 72460.7} and len(log) == 1
+    assert cockpit._alive(tmp_path / "fehlt.pid") is None
+
+
+def test_cockpit_renders_without_errors(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    app = AppTest.from_file(
+        str(Path(__file__).resolve().parents[1] / "src/tradikg_bot/dashboard/app.py")
+    )
+    app.run(timeout=60)
+    assert not app.exception

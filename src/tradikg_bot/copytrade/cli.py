@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import threading
 import time
 
@@ -79,6 +80,15 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     out = cfg.home / "reports" / f"copy-{pd.Timestamp.now(tz='UTC'):%Y%m%dT%H%M%S}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_copy_html(res, cov, sensitivity))
+    summary = {
+        "created": f"{pd.Timestamp.now(tz='UTC'):%Y-%m-%dT%H:%M}",
+        "capital": ccfg.capital,
+        "final": res.final,
+        "trades": len(res.trades),
+        "followed": len(res.followed),
+        "report": str(out),
+    }
+    (out.parent / "copy-latest.json").write_text(json.dumps(summary))
     print(
         f"Copy-Simulation {res.start:%d.%m. %H:%M} – {res.end:%d.%m. %H:%M} UTC: "
         f"{ccfg.capital:.2f} $ -> {res.final:.2f} $ | {len(res.trades)} kopierte Trades | "
