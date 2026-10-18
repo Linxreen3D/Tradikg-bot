@@ -154,3 +154,11 @@ Anlass: Video eines „Copy-Trading-Bots“ (Memecoins auf Solana, 42 $ → 1.88
 - Erster Lauf nach ~10 min Sammeln: 100 $ → 99,37 $ bei nur 2 kopierten Trades – noch ohne Aussagekraft.
 - Offene Frage an den Prüfer: Ist dieses Modell (insbesondere Preis nach Verzögerung, Preiseinfluss,
   Auswahl nach kurzfristigem ROI) realistisch genug, um Copy-Trading von Memecoins fair zu bewerten?
+
+## 10. Nachtrag: Gebühren-Hebel und nächste Entscheidungen
+
+Siehe `docs/PLAN_NAECHSTE_SCHRITTE.md`. Kurz: Daytrading-Strategien (Donchian 1h, VWAP 15m) wären nur
+mit One-Tradings „API Trading“-Gebühren (−0,005/0,015 %, Verfügbarkeit für Privatkunden ungeklärt)
+in Training und Test positiv; mit 0,5 % Stop-Slippage auch dort nicht. Funding-Carry auf Kraken-Futures
+(12 Monate): +3,2–3,5 %, 77 % Monate im Plus, schlechtester Monat −0,28 %. Entscheidungsplan mit
+festen Ja/Nein-Kriterien.
