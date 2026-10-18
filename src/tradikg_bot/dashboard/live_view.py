@@ -200,8 +200,11 @@ def render(cfg: PlatformConfig) -> None:
     st.divider()
     st.markdown("### 🤖 Copy-Bot · LIVE · virtuell")
     st.caption(
-        "Folgt automatisch den 3 besten aktiven Solana-Tradern (Rangliste alle 30 min), kopiert deren "
-        "Käufe/Verkäufe zum Kurs nach 10 s Verzögerung inkl. Gebühren. Kein echtes Geld."
+        "Folgt automatisch den 3 besten aktiven Tradern **aller Blockchains** (Solana, Base, BSC, …). "
+        "Rangliste alle 10 min; gewechselt wird, sobald ein anderer Trader mindestens 25 % besser "
+        "dasteht (Score = ROI mit Abschlag für wenige Runden). Kopiert zum Kurs nach 100 s "
+        "Verzögerung (so spät sieht unser Sammler die Trades) inkl. DEX-, Bot- und Netzgebühr. "
+        "Kein echtes Geld."
     )
 
     @st.fragment(run_every=15)
@@ -253,6 +256,13 @@ def render(cfg: PlatformConfig) -> None:
             ),
             unsafe_allow_html=True,
         )
+        alt_path = cfg.data_dir / "copy_live_v1.json"
+        if alt_path.exists():
+            a = json.loads(alt_path.read_text())
+            st.caption(
+                f"Vergleich gleiche Daten, alte Taktik (beste ROI, alle 30 min): {a['balance']:,.2f} $ "
+                f"({a['pnl']:+,.2f} $, {a['trades']} Trades) – neue Taktik: {bal:,.2f} $."
+            )
         left, right = st.columns([3, 2])
         curve = pd.DataFrame(s.get("curve", []), columns=["ts", "balance"])
         with left:

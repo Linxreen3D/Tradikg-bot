@@ -34,7 +34,7 @@ VERDICTS = [
     ("Daytrading (5 Strategien)", "deaktiviert lassen", "bei Kraken-Gebühren alle ≈ 0 €"),
     ("Signal-/Bracket-Bot", "deaktiviert lassen", "kein Vorteil nach Kosten"),
     (
-        "Copy-Trading (Solana)",
+        "Copy-Trading (alle Chains)",
         "unentschieden – nur Simulation",
         "realistische Verzögerung: 100 $ → 99,85 $",
     ),

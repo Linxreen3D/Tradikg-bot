@@ -123,7 +123,7 @@ def render(cfg: PlatformConfig) -> None:
     c[2].metric(
         "🔎 Copy-Sammler",
         "läuft ✅" if copy_pid else "aus ⛔",
-        help="sammelt öffentliche Solana-Trades für den Simulator",
+        help="sammelt öffentliche DEX-Trades aller Chains für den Simulator",
     )
 
     # -- Echtgeld ------------------------------------------------------------------------------

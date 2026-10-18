@@ -1,8 +1,8 @@
 """Sammler für öffentliche DEX-Trades (GeckoTerminal-API, ohne Schlüssel).
 
-Je Durchgang: trendende Solana-Pools abrufen und je Pool die letzten (bis zu 300) Trades mit
-Wallet-Adresse speichern. Doppelte Trades (gleicher tx_hash) werden ignoriert. Liest nur
-öffentliche Daten, sendet nichts, besitzt keine Wallet.
+Je Durchgang: die gerade trendenden Pools **aller Blockchains** (Solana, Base, BSC, …) abrufen
+und je Pool die letzten (bis zu 300) Trades mit Wallet-Adresse speichern. Doppelte Trades (gleicher
+tx_hash) werden ignoriert. Liest nur öffentliche Daten, sendet nichts, besitzt keine Wallet.
 
 Grenze: Pro Abruf liefert ein Pool nur die letzten 300 Trades – bei sehr aktiven Pools fehlen
 zwischen zwei Abrufen Trades. Die Abdeckung wird im Bericht ausgewiesen.
@@ -19,7 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-API = "https://api.geckoterminal.com/api/v2/networks/solana"
+API = "https://api.geckoterminal.com/api/v2/networks"
 UA = {
     "User-Agent": "tradikg-bot/0.1 (copy-trading simulator, read-only)",
     "Accept": "application/json",
@@ -63,10 +63,14 @@ class CopyStore:
         self.conn = sqlite3.connect(str(path), isolation_level=None)
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(pools)")}
+        if "network" not in cols:  # ältere Datenbanken: bisher nur Solana
+            self.conn.execute("ALTER TABLE pools ADD COLUMN network TEXT DEFAULT 'solana'")
 
     def save_pool(self, pool: dict[str, Any], now: str) -> None:
         self.conn.execute(
-            """INSERT INTO pools VALUES (?,?,?,?,?,?,?,?)
+            """INSERT INTO pools (pool, token, name, dex, reserve_usd, created_at, first_seen,
+               last_seen, network) VALUES (?,?,?,?,?,?,?,?,?)
                ON CONFLICT(pool) DO UPDATE SET reserve_usd=excluded.reserve_usd,
                last_seen=excluded.last_seen, name=excluded.name""",
             (
@@ -78,6 +82,7 @@ class CopyStore:
                 pool["created_at"],
                 now,
                 now,
+                pool["network"],
             ),
         )
 
@@ -89,7 +94,9 @@ class CopyStore:
 
 def parse_pool(raw: dict[str, Any]) -> dict[str, Any]:
     a, rel = raw["attributes"], raw["relationships"]
+    net = rel.get("network", {}).get("data", {}).get("id") or raw.get("id", "solana_").split("_")[0]
     return {
+        "network": net or "solana",
         "pool": a["address"],
         "token": rel["base_token"]["data"]["id"].split("_", 1)[-1],
         "name": a.get("name", ""),
@@ -138,12 +145,12 @@ def collect_once(
 ) -> int:
     """Ein Durchgang. ``pause`` hält das öffentliche Limit (≈ 30 Abrufe/Minute) ein."""
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    pools = [parse_pool(p) for p in fetch(f"{API}/trending_pools")["data"]]
+    pools = [parse_pool(p) for p in fetch(f"{API}/trending_pools")["data"]]  # alle Chains
     new = 0
     for pool in pools:
         time.sleep(pause)
         try:
-            raw = fetch(f"{API}/pools/{pool['pool']}/trades")["data"]
+            raw = fetch(f"{API}/{pool['network']}/pools/{pool['pool']}/trades")["data"]
         except Exception as exc:  # einzelner Pool fehlgeschlagen – nächster Durchgang
             log(f"Pool {pool['name']}: {exc}")
             continue

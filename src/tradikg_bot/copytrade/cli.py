@@ -37,14 +37,16 @@ def cmd_collect(args: argparse.Namespace) -> int:
             try:
                 collect_once(store)
                 if not args.no_live:
-                    from tradikg_bot.copytrade.live import run_live
+                    from tradikg_bot.copytrade.live import TACTICS, run_live
 
-                    snap = run_live(db, cfg.data_dir / "copy_live.json")
-                    print(
-                        f"Live-Copy: {snap['balance']:.2f} $ ({snap['pnl']:+.2f} $), "
-                        f"{snap['trades']} Trades, folge {len(snap['leaders'])}",
-                        flush=True,
-                    )
+                    for name, (label, ccfg) in TACTICS.items():
+                        snap = run_live(db, cfg.data_dir / name, ccfg, label)
+                        print(
+                            f"Live-Copy {label.split(':')[0]}: {snap['balance']:.2f} $ "
+                            f"({snap['pnl']:+.2f} $), {snap['trades']} Trades, "
+                            f"folge {len(snap['leaders'])}",
+                            flush=True,
+                        )
             except Exception as exc:  # Netz/API – nächster Durchgang
                 print(f"Fehler: {exc}", flush=True)
             stop.wait(max(5.0, args.interval - (time.time() - started)))
@@ -112,7 +114,7 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 def register(sub: argparse._SubParsersAction) -> None:
     copy = sub.add_parser("copy", help="Copy-Trading-Simulator (nur virtuell)")
     cs = copy.add_subparsers(dest="copy_cmd", required=True)
-    p = cs.add_parser("collect", help="Öffentliche Solana-DEX-Trades sammeln (GeckoTerminal)")
+    p = cs.add_parser("collect", help="Öffentliche DEX-Trades aller Chains sammeln (GeckoTerminal)")
     p.add_argument("--platform-config")
     p.add_argument("--once", action="store_true")
     p.add_argument("--interval", type=float, default=150.0, help="Sekunden je Durchgang")

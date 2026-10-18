@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections import deque
 from dataclasses import dataclass, field
@@ -42,6 +43,28 @@ class CopyConfig:
     rerank_min: float = 30.0  # Rangliste alle 30 min neu
     active_min: float = 60.0  # nur Trader, die in der letzten Stunde gehandelt haben
     random_seed: int | None = None  # Vergleich: zufällige statt beste Wallets (ohne ROI-Filter)
+    rank_shrink: float = 0.0  # > 0: ROI × Runden/(Runden + k) – wenige Glückstreffer zählen weniger
+    switch_margin: float = (
+        0.0  # > 0: Gefolgten nur ersetzen, wenn ein anderer um so viel besser ist
+    )
+
+
+# Netzgebühr je Kauf/Verkauf in USD (grobe, eher vorsichtige Werte); unbekannte Chain: 0,50 $
+NETWORK_USD = {
+    "base": 0.02,
+    "arbitrum": 0.03,
+    "polygon_pos": 0.02,
+    "bsc": 0.05,
+    "robinhood": 0.05,
+    "ton": 0.05,
+    "eth": 3.0,
+}
+
+
+def pool_fee(name: str, default: float) -> float:
+    """DEX-Gebühr aus dem Poolnamen (z. B. „X / WETH 0.3%“), sonst ``default``."""
+    m = re.search(r"(\d+(?:\.\d+)?)%\s*$", name or "")
+    return float(m[1]) / 100 if m else default
 
 
 def load_trades(db: str | Path, since: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -99,9 +122,17 @@ def rank_wallets(
 ) -> pd.DataFrame:
     """Beste Wallets nach ROI; mit ``rng`` stattdessen zufällige Reihenfolge aller aktiven
     Wallets (gleiche Mindestanforderungen, aber ohne ROI-Filter) als Vergleichsmaßstab."""
-    st = wallet_stats(trades)
+    # Vorfilter (exakt, nur schneller): Jede Runde endet mit einem Verkauf; Anzahl und Ø-Größe
+    # gelten für alle Trades der Wallet – wer hier scheitert, scheitert auch unten.
+    g = trades.groupby("wallet")
+    pre = (
+        (g.size() <= cfg.max_trades)
+        & (g["volume_usd"].mean() >= cfg.min_trade_usd)
+        & (trades["kind"].eq("sell").groupby(trades["wallet"]).sum() >= cfg.min_rounds)
+    )
+    st = wallet_stats(trades[trades["wallet"].isin(pre[pre].index)])
     if st.empty:
-        return st
+        return st.assign(score=pd.Series(dtype=float))
     ok = (
         (st["rounds"] >= cfg.min_rounds)
         & (st["avg_usd"] >= cfg.min_trade_usd)
@@ -111,7 +142,28 @@ def rank_wallets(
     if rng is not None:
         return st[ok].sample(frac=1, random_state=rng).reset_index(drop=True)
     ok &= st["roi"] > 0
-    return st[ok].sort_values(["roi", "win_rate"], ascending=False).reset_index(drop=True)
+    st = st[ok].copy()
+    k = cfg.rank_shrink
+    st["score"] = st["roi"] * st["rounds"] / (st["rounds"] + k) if k > 0 else st["roi"]
+    return st.sort_values(["score", "win_rate"], ascending=False).reset_index(drop=True)
+
+
+def _with_hysteresis(ranked: pd.DataFrame, leaders: list[str], n: int, margin: float) -> list[str]:
+    """Gefolgte behalten, solange sie geeignet und aktiv sind; ein Herausforderer ersetzt den
+    schwächsten nur, wenn sein Score um ``margin`` (z. B. 25 %) höher ist. Freie Plätze werden mit
+    den Besten aufgefüllt. Verhindert ständiges Hin- und Herwechseln (jeder Wechsel kostet)."""
+    score = dict(zip(ranked["wallet"], ranked["score"], strict=True))
+    keep = [w for w in leaders if w in score]
+    for w in ranked["wallet"]:
+        if w in keep:
+            continue
+        if len(keep) < n:
+            keep.append(w)
+            continue
+        weakest = min(keep, key=score.__getitem__)
+        if score[w] > score[weakest] * (1 + margin):
+            keep[keep.index(weakest)] = w
+    return sorted(keep, key=score.__getitem__, reverse=True)
 
 
 @dataclass
@@ -191,6 +243,19 @@ def simulate_copy(
             f"Zu wenig Daten: {hours:.1f} h gesammelt, Rückblick braucht {cfg.lookback_h} h."
         )
     reserve = dict(zip(pools["pool"], pools["reserve_usd"], strict=True))
+    nets = pools["network"] if "network" in pools else pd.Series("solana", index=pools.index)
+    chain = dict(zip(pools["pool"], nets.fillna("solana"), strict=True))
+    dex = {
+        p: pool_fee(n, cfg.dex_fee)
+        for p, n in zip(
+            pools["pool"], pools.get("name", pd.Series("", index=pools.index)), strict=True
+        )
+    }
+
+    def net_usd(pool: str) -> float:
+        c = chain.get(pool, "solana")
+        return cfg.network_usd if c == "solana" else NETWORK_USD.get(c, 0.50)
+
     prices = _Prices(trades)
     rng = None if cfg.random_seed is None else np.random.default_rng(cfg.random_seed)
     cash, positions = cfg.capital, {}
@@ -203,7 +268,7 @@ def simulate_copy(
 
     def cost_factor(usd: float, pool: str) -> float:
         impact = usd / max(reserve.get(pool, 0.0) / 2, 1.0)
-        return min(impact, 0.5) + cfg.dex_fee + cfg.app_fee
+        return min(impact, 0.5) + dex.get(pool, cfg.dex_fee) + cfg.app_fee
 
     def rerank(ts: pd.Timestamp) -> None:
         window = trades[
@@ -212,9 +277,14 @@ def simulate_copy(
         active = set(
             window.loc[window["ts"] >= ts - pd.Timedelta(minutes=cfg.active_min), "wallet"]
         )
+        window = window[window["wallet"].isin(active)]  # nur Aktive kommen in Frage
         ranked = rank_wallets(window, cfg, fired, rng)
-        ranked = ranked[ranked["wallet"].isin(active)].head(cfg.followers)
-        new = list(ranked["wallet"])
+        if cfg.switch_margin > 0 and rng is None:
+            new = _with_hysteresis(ranked, leaders, cfg.followers, cfg.switch_margin)
+            ranked = ranked.set_index("wallet").loc[new].reset_index()
+        else:
+            ranked = ranked.head(cfg.followers)
+            new = list(ranked["wallet"])
         for _, top in ranked.iterrows():
             w = str(top["wallet"])
             if w in leaders:
@@ -256,7 +326,7 @@ def simulate_copy(
         quote = prices.after(pos.pool, ts + pd.Timedelta(seconds=cfg.delay_s), cfg.price_window_s)
         px = quote[0] if quote else prices.last_before(pos.pool, ts) or 0.0
         gross = pos.units * px
-        out = gross * (1 - cost_factor(gross, pos.pool)) - cfg.network_usd
+        out = gross * (1 - cost_factor(gross, pos.pool)) - net_usd(pos.pool)
         cash += max(out, 0.0)
         pnl = out - pos.cost_usd
         del positions[pos.token]
@@ -319,7 +389,7 @@ def simulate_copy(
             usd = cash * cfg.position_frac
             if quote is not None and usd >= 1.0:
                 px, fill_ts = quote
-                spend = usd - cfg.network_usd
+                spend = usd - net_usd(row.pool)
                 units = spend * (1 - cost_factor(spend, row.pool)) / px
                 cash -= usd
                 positions[row.token] = Position(
@@ -330,7 +400,7 @@ def simulate_copy(
                     {
                         "ts": fill_ts,
                         "text": f"[COPY] {row.wallet[:6]}… kaufte "
-                        f"{row.token[:6]}… · wir {usd:.2f} $",
+                        f"{row.token[:6]}… ({chain.get(row.pool, 'solana')}) · wir {usd:.2f} $",
                         "pnl": None,
                     }
                 )

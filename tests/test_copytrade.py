@@ -222,7 +222,9 @@ def test_live_runner_writes_snapshot_from_fixed_start(tmp_path):
             for r in rows
         ]
     )
-    store.conn.execute("INSERT INTO pools VALUES ('P1','TOK1','T','pumpswap',1e12,'','','')")
+    store.conn.execute(
+        "INSERT INTO pools VALUES ('P1','TOK1','T','pumpswap',1e12,'','','','solana')"
+    )
     out = tmp_path / "live.json"
     out.write_text(json.dumps({"start": (T0 + pd.Timedelta(seconds=later)).isoformat()}))
     snap = run_live(tmp_path / "c.sqlite", out, CopyConfig(lookback_h=2, **NO_COST))
@@ -237,3 +239,57 @@ def test_random_baseline_ignores_roi_but_keeps_activity_filters():
     rows = history() + [tr(10 + i, "BOT", "buy", 100, 1.0) for i in range(300)]
     ranked = rank_wallets(frame(rows), CopyConfig(), rng=np.random.default_rng(0))
     assert set(ranked["wallet"]) == {"GOOD", "BAD"}  # Verlierer dabei, Bot nicht
+
+
+def test_switches_only_to_clearly_better_traders():
+    from tradikg_bot.copytrade.simulate import _with_hysteresis
+
+    ranked = pd.DataFrame({"wallet": ["NEW", "OLD", "MID"], "score": [1.1, 1.0, 0.9]})
+    assert _with_hysteresis(ranked, ["OLD", "MID"], 2, 0.25) == ["OLD", "MID"]  # +22 %: bleibt
+    ranked.loc[0, "score"] = 1.5  # NEW jetzt 67 % besser als MID → ersetzt den schwächsten
+    assert _with_hysteresis(ranked, ["OLD", "MID"], 2, 0.25) == ["NEW", "OLD"]
+    assert _with_hysteresis(ranked, ["GONE"], 2, 0.25) == ["NEW", "OLD"]  # Inaktive raus, auffüllen
+
+
+def test_shrunk_score_prefers_many_rounds_over_one_lucky_hit():
+    rows = history()  # GOOD: 3 Runden je +20 %
+    rows += [tr(5000, "LUCKY", "buy", 100, 1.0), tr(5060, "LUCKY", "sell", 100, 1.25)]
+    rows += [tr(5100, "LUCKY", "buy", 100, 1.0), tr(5160, "LUCKY", "sell", 100, 1.25)]
+    rows += [tr(5200, "LUCKY", "buy", 100, 1.0), tr(5260, "LUCKY", "sell", 100, 1.25)]
+    rows += [
+        tr(6000 + i, "MANY", k, 100, 1.0 + 0.19 * (k == "sell"))
+        for i in range(0, 20, 2)
+        for k in ("buy",)
+    ] + [tr(6001 + i, "MANY", "sell", 100, 1.19) for i in range(0, 20, 2)]
+    raw = rank_wallets(frame(rows), CopyConfig())
+    shrunk = rank_wallets(frame(rows), CopyConfig(rank_shrink=5))
+    assert raw["wallet"].iloc[0] == "LUCKY"  # höchste ROI bei nur 3 Runden
+    assert shrunk["wallet"].iloc[0] == "MANY"  # 10 Runden mit fast gleicher ROI gewinnen
+
+
+def test_fees_follow_chain_and_pool_fee_tier():
+    from tradikg_bot.copytrade.simulate import NETWORK_USD, pool_fee
+
+    assert pool_fee("X / WETH 0.3%", 0.0025) == pytest.approx(0.003)
+    assert pool_fee("TOK / SOL", 0.0025) == 0.0025
+    rows = history()
+    rows += [tr(4000, "GOOD", "buy", 100, 1.0, pool="P2", token="T2")]
+    rows += [tr(4011, "X", "buy", 1, 1.0, pool="P2", token="T2")]
+    rows += [tr(4100, "GOOD", "sell", 100, 1.0, pool="P2", token="T2")]
+    rows += [tr(4111, "X", "sell", 1, 1.0, pool="P2", token="T2")]
+    pools = pd.DataFrame(
+        {
+            "pool": ["P1", "P2"],
+            "reserve_usd": [1e12, 1e12],
+            "name": ["", "T2 / WETH 1%"],
+            "network": ["solana", "eth"],
+        }
+    )
+    cfg = CopyConfig(lookback_h=2, app_fee=0.0)
+    df = frame(rows)
+    res = simulate_copy(df, pools, cfg, start=df["ts"].iloc[0] + pd.Timedelta(seconds=3900))
+    (t,) = res.trades
+    usd = 10.0
+    units = (usd - NETWORK_USD["eth"]) * (1 - 0.01 - 1e-11) / 1.0
+    assert t["out_usd"] == pytest.approx(units * (1 - 0.01) - NETWORK_USD["eth"], rel=1e-6)
+    assert "(eth)" in next(e["text"] for e in res.feed if e["text"].startswith("[COPY]"))

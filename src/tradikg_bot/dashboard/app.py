@@ -285,7 +285,8 @@ def _simulation_tab(cfg: PlatformConfig) -> None:
         with st.expander("Protokoll"):
             st.code(log)
     st.markdown(
-        "---\n**Copy-Trading (virtuell):** wertet die gesammelten öffentlichen Solana-Trades aus."
+        "---\n**Copy-Trading (virtuell):** wertet die gesammelten öffentlichen DEX-Trades "
+        "aller Chains aus."
     )
     if st.button("▶ Copy-Trading auswerten"):
         with st.spinner("Werte gesammelte Trades aus …"):
