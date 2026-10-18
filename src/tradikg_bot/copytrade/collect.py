@@ -126,11 +126,15 @@ def parse_trades(pool: dict[str, Any], raw: list[dict[str, Any]]) -> list[tuple]
     return rows
 
 
+def _log(msg: str) -> None:
+    print(msg, flush=True)  # sofort ins Log (auch im Hintergrund mit nohup)
+
+
 def collect_once(
     store: CopyStore,
     fetch: Callable[[str], Any] = http_json,
     pause: float = 6.0,
-    log: Callable[[str], None] = print,
+    log: Callable[[str], None] = _log,
 ) -> int:
     """Ein Durchgang. ``pause`` hält das öffentliche Limit (≈ 30 Abrufe/Minute) ein."""
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
