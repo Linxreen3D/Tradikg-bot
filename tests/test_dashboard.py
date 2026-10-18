@@ -242,3 +242,38 @@ def test_real_money_charts_render_with_purchase_log(tmp_path, monkeypatch):
     app.run(timeout=60)
     assert not app.exception
     assert any("Wert deines Echtgelds" in m.value for m in app.markdown)
+
+
+LIVE_LOG = """\
+2026-10-18 01:52:12 UTC  [TAG 2026-10-17] XBTEUR: Schluss 72460.70, SMA 200 62799.20 → über
+2026-10-18 01:52:12 UTC  [ORDER] buy XBTEUR 0.00013006 @ 72460.7 → OHA4XL
+2026-10-18 01:52:13 UTC  [SKIP] ETHEUR: 3.00 € frei reicht nicht für die Mindestorder 4.40 €
+2026-10-18 09:58:17 UTC  [KAUF] XBTEUR 0.00012834 zu 73064.50 (Gebühr 0.0750 €)
+2026-11-02 01:00:00 UTC  [TAG 2026-11-01] XBTEUR: Schluss 60000.00, SMA 200 61000.00 → unter
+2026-11-02 08:00:00 UTC  [VERKAUF] XBTEUR 0.00012834 zu 59000.00 (Signal), Ergebnis ≈ -1.90 €
+"""
+
+
+def test_strategy_health_parses_fills_deviation_and_rejections(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    from tradikg_bot.dashboard import health
+
+    ev = health.parse_log(LIVE_LOG.splitlines())
+    f = health.fills(ev)
+    buy, sell = f.iloc[0], f.iloc[1]
+    assert buy["Gebühr %"] == pytest.approx(0.0750 / (0.00012834 * 73064.5))  # ≈ 0,80 % Taker
+    assert buy["Abweichung"] == pytest.approx(72460.7 / 73064.5 - 1)  # teurer als der Schluss
+    assert sell["Abweichung"] == pytest.approx(59000 / 60000 - 1) and sell["Ergebnis €"] == -1.9
+    assert list(ev[ev["tag"] == "SKIP"]["text"])[0].startswith("ETHEUR: 3.00 €")
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    (tmp_path / "live").mkdir()
+    (tmp_path / "live" / "live.log").write_text(LIVE_LOG)
+    app = AppTest.from_file(str(APP))
+    app.run(timeout=60)
+    assert not app.exception
+    text = " ".join(m.value for m in app.markdown)
+    # Verkauf 1,7 % unter dem Entscheidungskurs → Ausführungsfehler + Hypothese
+    assert "Ausführung gegen Plan" in text and "Ausführungsfehler (1/1)" in text
+    assert any("Ausführungsfehler" in str(d.value) for d in app.dataframe)

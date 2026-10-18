@@ -126,3 +126,45 @@ def test_platform_config_validates_trend_risk_settings():
     with pytest.raises(ValueError):
         PlatformConfig(cash_yield_pa=0.5)
     assert PlatformConfig(invest_fraction=0.5).invest_fraction == 0.5
+
+
+def test_no_forced_trades_and_position_never_exceeds_risk_cap():
+    """Audit Punkt 7: ohne Signal kein Trade; mit Signal nie mehr als der Anteil je Coin."""
+    import numpy as np
+
+    flat = frame([(10, 10, 10, 10)] * 3 + [(10, 10, 9, 9 - i * 0.01) for i in range(300)])
+    _, trades, log, alloc = run(flat)
+    assert trades == [] and not alloc.state.positions and log == []
+    rng = np.random.default_rng(1)
+    px = 10 * np.exp(np.cumsum(rng.normal(0.001, 0.04, 400)))
+    noisy = frame([(p, p * 1.02, p * 0.97, p) for p in px])
+    cfg = TrendConfig(**{**CFG.__dict__, "invest_fraction": 0.5})
+    data = {"AAA": noisy}
+    alloc = TrendAllocator(list(data), 100.0, no_min, cfg)
+    eq = 100.0
+    for ts in noisy.index:
+        before = set(alloc.state.positions)
+        closes = {s: d["close"].loc[:ts] for s, d in data.items()}
+        alloc.step(ts, {s: d.loc[ts] for s, d in data.items()}, closes)
+        for sym in set(alloc.state.positions) - before:  # neuer Kauf ≤ Vortageswert × 50 %
+            p = alloc.state.positions[sym]
+            assert p.units * p.entry_price + p.entry_fee <= eq * 0.5 + 1e-9
+        eq = alloc.equity({s: float(c.iloc[-1]) for s, c in closes.items()})
+    assert alloc.state.trade_seq > 0  # es wird gehandelt, wenn Signale da sind
+
+
+def test_post_analysis_separates_fee_execution_forecast_and_normal_losses():
+    from tradikg_bot.trading.analysis import classify_trade, hypotheses
+
+    assert classify_trade(gross=1.0, net=0.5) == "Gewinn"
+    assert classify_trade(gross=0.1, net=-0.05) == "Gebührenproblem"
+    assert classify_trade(gross=-1, net=-1.1, slippage=-0.02) == "Ausführungsfehler"
+    assert classify_trade(-3, -3.1, slippage=0.0, ref_loss_p10=-0.15, loss_pct=-0.25) == (
+        "Prognosefehler"
+    )
+    assert classify_trade(-1, -1.1, slippage=0.0, ref_loss_p10=-0.15, loss_pct=-0.05) == (
+        "normaler statistischer Verlust"
+    )
+    hyp = hypotheses(["Gebührenproblem", "Gebührenproblem", "Gewinn"])
+    assert len(hyp) == 1 and "getrennten Daten" in hyp[0]
+    assert hypotheses(["normaler statistischer Verlust"] * 9) == []

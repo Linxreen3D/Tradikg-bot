@@ -76,7 +76,11 @@ def render_real(cfg: PlatformConfig) -> None:
         )
         c = st.columns(4)
         c[0].markdown(
-            _card("GESAMTWERT", f"{total:,.2f} €", f"Budget {s.get('budget_eur', 0):.2f} €"),
+            _card(
+                "GESAMTWERT",
+                f"{total:,.2f} €",
+                f"Obergrenze Bot {s.get('budget_eur', 0):.2f} € (kein Kontostand)",
+            ),
             unsafe_allow_html=True,
         )
         c[1].markdown(
