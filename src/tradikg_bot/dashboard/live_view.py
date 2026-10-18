@@ -36,7 +36,7 @@ def _feed_html(feed: list[dict]) -> str:
         right = f"{pnl:+.2f} $" if pnl is not None else ""
         rows.append(
             f"<div style='display:flex;justify-content:space-between;gap:8px;font:12px ui-monospace,"
-            f"monospace;padding:2px 0;color:{color}'><span>{e['ts'][11:19]} {html.escape(t)}</span>"
+            f"monospace;padding:2px 0;color:{color}'><span>{pd.Timestamp(e['ts']).tz_convert('Europe/Vienna'):%H:%M:%S} {html.escape(t)}</span>"
             f"<span>{right}</span></div>"
         )
     return "".join(rows) or "<div style='opacity:.7'>Noch keine Ereignisse.</div>"
@@ -163,7 +163,7 @@ def render(cfg: PlatformConfig) -> None:
                         {
                             "Token": o["token"][:10] + "…",
                             "von": o["wallet"][:6] + "…",
-                            "seit": o["since"][11:19],
+                            "seit": f"{pd.Timestamp(o['since']).tz_convert('Europe/Vienna'):%H:%M:%S}",
                             "Einsatz": f"{o['cost_usd']:.2f} $",
                             "Wert jetzt": f"{o['value_usd']:.2f} $",
                             "Ergebnis": f"{o['value_usd'] - o['cost_usd']:+.2f} $",

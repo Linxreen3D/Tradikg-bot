@@ -31,7 +31,10 @@ def main() -> None:
     st.set_page_config(page_title="Tradikg Paper", page_icon="📈", layout="wide")
     cfg = PlatformConfig.load()
     st.title("Tradikg – Paper-Trading & Research")
-    st.caption("Nur virtuelles Kapital. Kein Echtgeldhandel. Keine Renditeversprechen.")
+    st.caption(
+        "Live-Bot und Paper-Bot: virtuelles Kapital · Echtgeld-Bot (19 €, Kraken): siehe Cockpit · "
+        "Keine Renditeversprechen."
+    )
     if st.button("Aktualisieren"):
         st.rerun()
 
