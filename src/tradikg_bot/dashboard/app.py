@@ -12,7 +12,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from tradikg_bot.dashboard import cockpit, health, live_view, replay_view
+from tradikg_bot.dashboard import cockpit, goal, health, live_view, replay_view
 from tradikg_bot.dashboard import queries as q
 from tradikg_bot.platform_config import PlatformConfig
 
@@ -41,6 +41,7 @@ def main() -> None:
     tabs = st.tabs(
         [
             "🔴 Live-Bot",
+            "🎯 Ziel-Check",
             "🎛 Cockpit",
             "🩺 Strategy-Health",
             "Übersicht",
@@ -61,12 +62,15 @@ def main() -> None:
         live_view.render(cfg)
 
     with tabs[1]:
-        cockpit.render(cfg)
+        goal.render(cfg)
 
     with tabs[2]:
-        health.render(cfg)
+        cockpit.render(cfg)
 
     with tabs[3]:
+        health.render(cfg)
+
+    with tabs[4]:
         c = st.columns(4)
         c[0].metric("Gesamtkapital", eur(b["total_capital"]))
         c[1].metric("Trading-Balance", eur(b["trading_balance"]))
@@ -92,7 +96,7 @@ def main() -> None:
         else:
             st.success("✅ System bereit (Paper)")
 
-    with tabs[4]:
+    with tabs[5]:
         st.subheader("Offene Positionen")
         st.dataframe(q.open_positions(cfg), use_container_width=True, hide_index=True)
         st.subheader("Letzte Trades")
@@ -126,7 +130,7 @@ def main() -> None:
         st.dataframe(q.recent_signals(cfg), use_container_width=True, hide_index=True)
         st.caption(f"Einsetzbares Kapital: {eur(min(cfg.capital_eur, b['trading_balance']))}")
 
-    with tabs[5]:
+    with tabs[6]:
         curve = q.equity_curve(cfg)
         perf = q.performance(cfg)
         o = perf["overall"]
@@ -180,10 +184,10 @@ def main() -> None:
             day = st.selectbox("Tagesbericht", reports["day"])
             st.markdown(reports.set_index("day").loc[day, "markdown"])
 
-    with tabs[6]:
+    with tabs[7]:
         replay_view.render(cfg)
 
-    with tabs[7]:
+    with tabs[8]:
         st.subheader("Strategie-Ranking (letzter Research-Lauf, Testdaten)")
         st.caption("„bestätigt“ gilt nur für die untersuchten Daten – keine Gewinngarantie.")
         st.dataframe(q.research_results(cfg), use_container_width=True, hide_index=True)
@@ -195,7 +199,7 @@ def main() -> None:
         st.subheader("Prognosekalibrierung (vorhergesagt vs. beobachtet)")
         st.dataframe(q.calibration(cfg), use_container_width=True, hide_index=True)
 
-    with tabs[8]:
+    with tabs[9]:
         status = h["status"]
         c = st.columns(4)
         c[0].metric("Letzter Durchgang", status.get("updated_at", "–"))
@@ -211,7 +215,7 @@ def main() -> None:
         st.subheader("Fehler- und Warnprotokoll")
         st.dataframe(h["errors"], use_container_width=True, hide_index=True)
 
-    with tabs[9]:
+    with tabs[10]:
         st.subheader("Einstellungen (nur Anzeige)")
         st.json(q.settings(cfg))
         st.info(
@@ -220,7 +224,7 @@ def main() -> None:
         )
         st.caption(f"Stand: {pd.Timestamp.now(tz='UTC'):%Y-%m-%d %H:%M} UTC")
 
-    with tabs[10]:
+    with tabs[11]:
         _simulation_tab(cfg)
 
 

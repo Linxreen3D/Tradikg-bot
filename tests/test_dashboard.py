@@ -320,3 +320,31 @@ def test_live_tab_shows_solana_shadow_copy(tmp_path, monkeypatch):
     assert not app.exception
     html = " ".join(m.value for m in app.markdown)
     assert "SCHATTENBETRIEB" in html and "0.2100 SOL" in html and "1 abgelehnt" in html
+
+
+def test_goal_check_tab_renders_bot_overview(tmp_path, monkeypatch):
+    import json
+
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "copy_live.json").write_text(
+        json.dumps(
+            {
+                "capital": 100.0,
+                "balance": 92.5,
+                "pnl": -7.5,
+                "trades": 8,
+                "wins": 2,
+                "start": "2026-10-18T11:42:00+00:00",
+                "updated": "2026-10-18T14:00:00+00:00",
+            }
+        )
+    )
+    app = AppTest.from_file(str(APP))
+    app.run(timeout=60)
+    assert not app.exception
+    text = " ".join(m.value for m in app.markdown)
+    assert "Warum fast alles im Minus läuft" in text and "Empfehlung" in text
+    assert any("-7.5%" in d.value.get("Ergebnis", pd.Series()).tolist() for d in app.dataframe)
