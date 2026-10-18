@@ -70,7 +70,8 @@ def test_settings_contain_no_secrets(populated, monkeypatch):
     monkeypatch.setenv("KRAKEN_API_SECRET", "TOPSECRET")
     cfg, _ = populated
     text = str(q.settings(cfg)) + str(q.health(cfg)["status"])
-    assert "TOPSECRET" not in text and "deaktiviert" in q.settings(cfg)["live_mode"]
+    assert "TOPSECRET" not in text
+    assert q.settings(cfg)["echtgeld_bot (tradikg live)"] == "aus"  # ohne laufenden Prozess
 
 
 def test_queries_are_read_only(populated):

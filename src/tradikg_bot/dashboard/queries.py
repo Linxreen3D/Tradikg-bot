@@ -296,11 +296,26 @@ def health(cfg: PlatformConfig) -> dict[str, Any]:
     return info
 
 
+def _live_status(cfg: PlatformConfig) -> str:
+    """Status des separaten Echtgeld-Prozesses (nur lesend, im Dashboard nicht schaltbar)."""
+    import os
+
+    pid_file = cfg.home / "live" / "live.pid"
+    try:
+        pid = int(pid_file.read_text())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return "aus"
+    return f"läuft (PID {pid}) – Steuerung nur per Terminal: tradikg live status|kill"
+
+
 def settings(cfg: PlatformConfig) -> dict[str, Any]:
     """Einstellungen ohne Geheimnisse; der Live-Modus ist im Dashboard nicht schaltbar."""
     return {
         "mode": cfg.mode,
-        "live_mode": "deaktiviert (nicht über das Dashboard schaltbar)",
+        "strategy_mode": cfg.strategy_mode,
+        "invest_fraction": cfg.invest_fraction,
+        "echtgeld_bot (tradikg live)": _live_status(cfg),
         "timeframe": cfg.timeframe,
         "capital_eur": cfg.capital_eur,
         "symbols": list(cfg.symbols),
