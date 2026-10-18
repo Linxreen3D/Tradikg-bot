@@ -173,3 +173,19 @@ def test_loss_limit_stops_new_buys(tmp_path):
     chain.swap("L1", "TOK", 0, 1)
     r.run_once(T0)
     assert r.st.holdings == {} and "Verlustgrenze" in r.st.feed[-1]["text"]
+
+
+def test_keeps_watching_replaced_leader_until_position_is_sold(tmp_path):
+    chain, jup = Chain(), Jup()
+    current = ["L1"]
+    r = runner(tmp_path, chain, jup)
+    r.rank = lambda cur, fired: list(current)
+    r.run_once(T0)
+    chain.swap("L1", "TOK", 0, 1)
+    r.run_once(T0)
+    current[:] = ["L2"]  # L1 wird ersetzt
+    r.run_once(T0 + pd.Timedelta(minutes=11))
+    chain.swap("L1", "NEW", 0, 1)  # Kauf eines Ersetzten → nicht kopieren
+    chain.swap("L1", "TOK", 1, 0)  # aber seinen Verkauf mitmachen
+    r.run_once(T0 + pd.Timedelta(minutes=12))
+    assert r.st.holdings == {} and r.st.trades[-1]["reason"] == "Trader verkauft"

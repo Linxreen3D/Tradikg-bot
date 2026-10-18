@@ -205,10 +205,14 @@ class ShadowCopyRunner:
         now = now or pd.Timestamp.now(tz="UTC")
         if self.rank and (not self.st.next_rank or now >= pd.Timestamp(self.st.next_rank)):
             self._rerank(now)
-        for leader in list(self.st.leaders):
+        # Auch nach einem Wechsel weiter beobachten, solange wir noch Positionen von ihm halten –
+        # sonst würde sein Verkauf verpasst (Kauf nur von aktuell Gefolgten).
+        holders = [h.leader for h in self.st.holdings.values() if h.leader not in self.st.leaders]
+        for leader in [*self.st.leaders, *dict.fromkeys(holders)]:
             for mint, delta in self._new_swaps(leader):
                 if delta > 0:
-                    self._buy(leader, mint, now)
+                    if leader in self.st.leaders:
+                        self._buy(leader, mint, now)
                 elif mint in self.st.holdings and self.st.holdings[mint].leader == leader:
                     self._sell(mint, "Trader verkauft")
         for mint, h in list(self.st.holdings.items()):
