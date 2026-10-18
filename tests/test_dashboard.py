@@ -196,3 +196,49 @@ def test_live_tab_renders_real_snapshot(tmp_path, monkeypatch):
     assert not app.exception
     html = " ".join(m.value for m in app.markdown)
     assert "GESAMTWERT" in html and "Kauf-Order offen" in html and "0.000130" in html
+
+
+def test_real_money_charts_render_with_purchase_log(tmp_path, monkeypatch):
+    import json
+
+    from streamlit.testing.v1 import AppTest
+
+    from tradikg_bot.dashboard import live_view
+    from tradikg_bot.platform_config import PlatformConfig
+    from tradikg_bot.storage import SQLiteStore
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "live.log").write_text(
+        "2026-10-18 09:58:17 UTC  [KAUF] XBTEUR 0.00012834 zu 73064.50 (Gebühr 0.0750 €)\n"
+    )
+    assert live_view._buy_times(PlatformConfig(home=tmp_path))["XBTEUR"] == pd.Timestamp(
+        "2026-10-18 09:58:17", tz="UTC"
+    )
+    idx = pd.date_range("2026-10-18 08:00", periods=4, freq="h", tz="UTC")
+    bars = pd.DataFrame(
+        {"open": 73000.0, "high": 73500.0, "low": 72900.0, "close": 73100.0, "volume": 1.0},
+        index=idx,
+    )
+    (tmp_path / "data").mkdir()
+    SQLiteStore(tmp_path / "data" / "market.sqlite").save_bars("XBTEUR", "1h", bars)
+    (live / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "updated": "2026-10-18T11:30:00+00:00",
+                "budget_eur": 19.0,
+                "balances": {"ZEUR": {"total": 9.5, "held": 0.0}},
+                "prices": {"XBTEUR": 73200.0, "ETHEUR": 2150.0},
+                "symbols": {
+                    "XBTEUR": {"units": 0.00012834, "entry_price": 73064.5, "stop_price": 58451.6}
+                },
+            }
+        )
+    )
+    app = AppTest.from_file(
+        str(Path(__file__).resolve().parents[1] / "src/tradikg_bot/dashboard/app.py")
+    )
+    app.run(timeout=60)
+    assert not app.exception
+    assert any("Wert deines Echtgelds" in m.value for m in app.markdown)

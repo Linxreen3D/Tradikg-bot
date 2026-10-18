@@ -102,8 +102,93 @@ def render_real(cfg: PlatformConfig) -> None:
                 )
             else:
                 col.markdown(_card(name, "–", "keine Position"), unsafe_allow_html=True)
+        _real_charts(cfg, s, eur)
 
     real()
+
+
+def _buy_times(cfg: PlatformConfig) -> dict[str, pd.Timestamp]:
+    """Zeitpunkt des letzten Kaufs je Coin aus dem Protokoll des Echtgeld-Bots."""
+    log = cfg.home / "live" / "live.log"
+    out: dict[str, pd.Timestamp] = {}
+    for line in log.read_text().splitlines() if log.exists() else []:
+        if "[KAUF]" in line:
+            sym = line.split("[KAUF]")[1].split()[0]
+            out[sym] = pd.Timestamp(line[:19], tz="UTC")
+    return out
+
+
+def _real_charts(cfg: PlatformConfig, s: dict, eur: float) -> None:
+    from tradikg_bot.dashboard import cockpit
+
+    held = {sym: v for sym, v in s.get("symbols", {}).items() if v.get("units", 0) > 0}
+    if not held:
+        return
+    since = min(_buy_times(cfg).values(), default=pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=1))
+    frames = []
+    for sym, v in held.items():  # Wert je Stunde = Menge × Schlusskurs (+ aktueller Kurs am Ende)
+        b = cockpit._bars(cfg, sym, "1h", int((since - pd.Timedelta(hours=1)).timestamp() * 1000))
+        b = pd.concat(
+            [
+                b,
+                pd.DataFrame(
+                    {
+                        "ts": [pd.Timestamp(s["updated"])],
+                        "close": [s["prices"].get(sym) or b["close"].iloc[-1]],
+                    }
+                ),
+            ]
+        )
+        frames.append(b.set_index("ts")["close"].rename(sym) * v["units"])
+    value = pd.concat(frames, axis=1).sort_index().ffill().dropna().sum(axis=1) + eur
+    curve = value[value.index >= since - pd.Timedelta(hours=1)].reset_index()
+    curve.columns = ["ts", "wert"]
+    start = s.get("budget_eur", 0.0)
+    left, right = st.columns([2, 3])
+    with left:
+        st.markdown("**Wert deines Echtgelds seit dem Kauf**")
+        if len(curve) > 1:
+            line = (
+                alt.Chart(curve)
+                .mark_line(point=True, color=GREEN if curve["wert"].iloc[-1] >= start else RED)
+                .encode(
+                    x=alt.X("ts:T", title=None),
+                    y=alt.Y("wert:Q", title="€", scale=alt.Scale(zero=False)),
+                    tooltip=[
+                        alt.Tooltip("ts:T", title="Zeit"),
+                        alt.Tooltip("wert:Q", title="Wert", format=",.2f"),
+                    ],
+                )
+            )
+            ref = (
+                alt.Chart(pd.DataFrame({"y": [start]}))
+                .mark_rule(color=GREY, strokeDash=[4, 4])
+                .encode(y="y:Q")
+            )
+            st.altair_chart((line + ref).properties(height=240), use_container_width=True)
+            st.caption(
+                f"gestrichelt: eingesetzte {start:.2f} € · Stunden-Schlusskurse, letzter Punkt live"
+            )
+        else:
+            st.caption("Verlauf erscheint mit der nächsten vollen Stunde.")
+    with right:
+        cols = st.columns(len(held))
+        for col, (sym, v) in zip(cols, held.items(), strict=True):
+            bars = cockpit._bars(
+                cfg,
+                sym,
+                "1h",
+                int((pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=2)).timestamp() * 1000),
+            )
+            if bars.empty:
+                continue
+            lines = [("Kaufpreis", v["entry_price"], cockpit.LIMIT, "solid")]
+            if v.get("stop_price"):
+                lines.append(("Stop bei Kraken", v["stop_price"], cockpit.STOP, "solid"))
+            col.altair_chart(
+                cockpit._price_chart(sym, bars, lines).properties(height=240),
+                use_container_width=True,
+            )
 
 
 def render(cfg: PlatformConfig) -> None:
