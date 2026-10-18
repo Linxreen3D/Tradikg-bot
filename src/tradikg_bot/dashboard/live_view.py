@@ -25,15 +25,16 @@ def _card(label: str, value: str, sub: str = "", color: str = "") -> str:
     )
 
 
-def _feed_html(feed: list[dict]) -> str:
+def _feed_html(feed: list[dict], unit: str = "$", digits: int = 2) -> str:
     rows = []
     for e in reversed(feed[-30:]):
         t = e["text"]
         color = BLUE if t.startswith("[COPY]") else RED if t.startswith("[FIRED]") else GREY
+        color = "#f59e0b" if t.startswith("[SKIP]") else color
         pnl = e.get("pnl")
         if pnl is not None:
             color = GREEN if pnl > 0 else RED
-        right = f"{pnl:+.2f} $" if pnl is not None else ""
+        right = f"{pnl:+.{digits}f} {unit}" if pnl is not None else ""
         rows.append(
             f"<div style='display:flex;justify-content:space-between;gap:8px;font:12px ui-monospace,"
             f"monospace;padding:2px 0;color:{color}'><span>{pd.Timestamp(e['ts']).tz_convert('Europe/Vienna'):%H:%M:%S} {html.escape(t)}</span>"
@@ -195,8 +196,104 @@ def _real_charts(cfg: PlatformConfig, s: dict, eur: float) -> None:
             )
 
 
+def render_solana(cfg: PlatformConfig) -> None:
+    """Solana-Copy mit echten Jupiter-Kursen (Schattenbetrieb bzw. später Echtgeld)."""
+    st.markdown("### 💸 Solana-Copy · echte Kurse")
+
+    @st.fragment(run_every=10)
+    def sol() -> None:
+        path = cfg.home / "copylive" / "snapshot.json"
+        if not path.exists():
+            st.info("Noch nicht gestartet: `tradikg copy solana run`")
+            return
+        s = json.loads(path.read_text())
+        eur = s.get("sol_eur") or 0.0
+        eq, cap = s["equity_sol"], s["capital_sol"]
+        pnl = eq - cap
+        age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(s["updated"])).total_seconds()
+        real = s.get("mode") == "echtgeld"
+        st.markdown(
+            f"{'🟢 LIVE' if age < 60 else f'🟠 seit {age / 60:.0f} min kein Durchgang'} · "
+            f"{'**ECHTGELD**' if real else '**SCHATTENBETRIEB** – echte Wallets und Kurse, keine Orders'}"
+            f" · gestartet {pd.Timestamp(s['start']).tz_convert('Europe/Vienna'):%d.%m. %H:%M}"
+        )
+        c = st.columns(4)
+        c[0].markdown(
+            _card("WERT", f"{eq:.4f} SOL", f"≈ {eq * eur:,.2f} € · Start {cap:.4f} SOL"),
+            unsafe_allow_html=True,
+        )
+        trades = s.get("trades", [])
+        wins = sum(t["pnl_sol"] > 0 for t in trades)
+        c[1].markdown(
+            _card(
+                "ERGEBNIS",
+                f"{pnl:+.4f} SOL",
+                f"{pnl / cap:+.1%} ≈ {pnl * eur:+.2f} € · {len(trades)} Trades, {wins} Gewinne",
+                GREEN if pnl > 0 else RED if pnl < 0 else "",
+            ),
+            unsafe_allow_html=True,
+        )
+        c[2].markdown(
+            _card(
+                "FOLGT JETZT",
+                f"{len(s['leaders'])} Wallets",
+                " · ".join(w[:6] + "…" for w in s["leaders"]) or "suche …",
+            ),
+            unsafe_allow_html=True,
+        )
+        skips = sum(e["text"].startswith("[SKIP]") for e in s.get("feed", []))
+        c[3].markdown(
+            _card("SCHUTZ", f"{skips} abgelehnt", "Rug-/Honeypot-/Liquiditäts-Prüfung"),
+            unsafe_allow_html=True,
+        )
+        left, right = st.columns([3, 2])
+        curve = pd.DataFrame(s.get("curve", []), columns=["ts", "sol"])
+        with left:
+            if len(curve) > 1:
+                curve["ts"] = pd.to_datetime(curve["ts"], utc=True)
+                st.altair_chart(
+                    alt.Chart(curve)
+                    .mark_line(color=GREEN if pnl >= 0 else RED, strokeWidth=2)
+                    .encode(
+                        x=alt.X("ts:T", title=None),
+                        y=alt.Y("sol:Q", title="SOL", scale=alt.Scale(zero=False)),
+                    )
+                    .properties(height=240),
+                    use_container_width=True,
+                )
+        with right:
+            st.markdown(
+                "<div style='max-height:260px;overflow-y:auto'>"
+                f"{_feed_html(s.get('feed', []), 'SOL', 4)}</div>",
+                unsafe_allow_html=True,
+            )
+        if s.get("holdings"):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Token": h["mint"][:10] + "…",
+                            "von": h["leader"][:6] + "…",
+                            "seit": f"{pd.Timestamp(h['since']).tz_convert('Europe/Vienna'):%H:%M:%S}",
+                            "Einsatz SOL": round(h["cost_sol"], 4),
+                            "Wert SOL": None
+                            if h["value_sol"] is None
+                            else round(h["value_sol"], 4),
+                        }
+                        for h in s["holdings"]
+                    ]
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+    sol()
+
+
 def render(cfg: PlatformConfig) -> None:
     render_real(cfg)
+    st.divider()
+    render_solana(cfg)
     st.divider()
     st.markdown("### 🤖 Copy-Bot · LIVE · virtuell")
     st.caption(

@@ -111,6 +111,73 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_solana(args: argparse.Namespace) -> int:
+    """Solana-Copy mit echten Jupiter-Kursen – derzeit nur Schattenbetrieb (nichts signiert)."""
+    import pandas as pd
+
+    from tradikg_bot.copytrade.solana_live import (
+        ShadowCopyRunner,
+        SolanaCopyConfig,
+        collector_rank,
+        kraken_sol_eur,
+    )
+    from tradikg_bot.service.ops import AlreadyRunningError, InstanceLock
+
+    cfg, db = _db(args)
+    root = cfg.home / "copylive"
+    root.mkdir(parents=True, exist_ok=True)
+    kill = root / "KILL_SWITCH"
+    if args.solana_cmd == "kill":
+        kill.unlink(missing_ok=True) if args.release else kill.touch()
+        print("Kill Switch " + ("gelöst" if args.release else "AKTIV – keine neuen Käufe"))
+        return 0
+    if args.solana_cmd == "status":
+        snap = root / "snapshot.json"
+        if not snap.exists():
+            print("Noch nicht gestartet.")
+            return 0
+        s = json.loads(snap.read_text())
+        print(
+            f"{s['mode']}: {s['equity_sol']:.4f} SOL (Start {s['capital_sol']:.4f}), "
+            f"{len(s['holdings'])} offen, {len(s['trades'])} Trades, folgt {len(s['leaders'])}"
+        )
+        for e in s["feed"][-10:]:
+            when = pd.Timestamp(e["ts"]).tz_convert("Europe/Vienna")
+            print(f"  {when:%H:%M:%S} {e['text']}")
+        return 0
+    try:
+        lock = InstanceLock(root / "run.lock").acquire()
+    except AlreadyRunningError as exc:
+        print(f"Abgelehnt: {exc}")
+        return 1
+
+    def log(msg: str) -> None:
+        print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
+
+    runner = ShadowCopyRunner(
+        root / "state.json",
+        root / "snapshot.json",
+        kill,
+        SolanaCopyConfig(capital_sol=args.capital_sol),
+        rank=collector_rank(db),
+        sol_eur=kraken_sol_eur,
+        log=log,
+    )
+    log("Solana-Copy im SCHATTENBETRIEB gestartet – echte Kurse, keine echten Orders")
+    try:
+        while True:
+            try:
+                runner.run_once()
+            except Exception as exc:  # Netz/RPC – nächster Versuch
+                log(f"Fehler: {exc}")
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        lock.release()
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     copy = sub.add_parser("copy", help="Copy-Trading-Simulator (nur virtuell)")
     cs = copy.add_subparsers(dest="copy_cmd", required=True)
@@ -126,3 +193,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--lookback-hours", type=float, default=3.0, help="Rückblick für die Auswahl")
     p.add_argument("--delay", type=float, default=10.0, help="Verzögerung in Sekunden")
     p.set_defaults(func=cmd_simulate, platform_cmd=True)
+    p = cs.add_parser("solana", help="Solana-Copy mit echten Kursen (Schattenbetrieb)")
+    p.add_argument("solana_cmd", choices=["run", "status", "kill"])
+    p.add_argument("--platform-config")
+    p.add_argument("--capital-sol", type=float, default=0.20, help="Schatten-Kapital in SOL")
+    p.add_argument("--interval", type=float, default=10.0, help="Sekunden je Durchgang")
+    p.add_argument("--release", action="store_true", help="Kill Switch lösen")
+    p.set_defaults(func=cmd_solana, platform_cmd=True)

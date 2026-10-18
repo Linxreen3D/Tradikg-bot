@@ -277,3 +277,46 @@ def test_strategy_health_parses_fills_deviation_and_rejections(tmp_path, monkeyp
     # Verkauf 1,7 % unter dem Entscheidungskurs → Ausführungsfehler + Hypothese
     assert "Ausführung gegen Plan" in text and "Ausführungsfehler (1/1)" in text
     assert any("Ausführungsfehler" in str(d.value) for d in app.dataframe)
+
+
+def test_live_tab_shows_solana_shadow_copy(tmp_path, monkeypatch):
+    import json
+
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    (tmp_path / "copylive").mkdir()
+    (tmp_path / "copylive" / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "mode": "schatten",
+                "updated": "2026-10-18T12:00:00+00:00",
+                "start": "2026-10-18T11:00:00+00:00",
+                "capital_sol": 0.2,
+                "equity_sol": 0.21,
+                "cash_sol": 0.19,
+                "sol_eur": 92.0,
+                "leaders": ["L1aaaaaa"],
+                "holdings": [
+                    {
+                        "mint": "MINTxxxxxxxx",
+                        "leader": "L1aaaaaa",
+                        "since": "2026-10-18T11:30:00+00:00",
+                        "cost_sol": 0.02,
+                        "value_sol": 0.03,
+                        "units": 1,
+                    }
+                ],
+                "trades": [{"pnl_sol": 0.001}],
+                "feed": [
+                    {"ts": "2026-10-18T11:30:00+00:00", "text": "[SKIP] x – Freeze", "pnl": None}
+                ],
+                "curve": [["2026-10-18T11:00:00+00:00", 0.2], ["2026-10-18T12:00:00+00:00", 0.21]],
+            }
+        )
+    )
+    app = AppTest.from_file(str(APP))
+    app.run(timeout=60)
+    assert not app.exception
+    html = " ".join(m.value for m in app.markdown)
+    assert "SCHATTENBETRIEB" in html and "0.2100 SOL" in html and "1 abgelehnt" in html
