@@ -1,164 +1,152 @@
-# Projektstand Tradikg-Bot – vollständige Beschreibung zur Zweitmeinung
+# Projektstand Tradikg-Bot – Briefing für ChatGPT
 
-Stand: 18.10.2026. Dieses Dokument fasst das Projekt so zusammen, dass ein anderes KI-System
-(z. B. ChatGPT) oder ein Mensch es ohne Zugriff auf den Code prüfen kann. Es enthält keine
-Zugangsdaten. Alle Zahlen stammen aus tatsächlich ausgeführten Läufen auf echten Kraken-Daten.
+Stand: 18.10.2026, 12:15 Uhr Wiener Zeit. Bitte lies alles, bevor du antwortest. Alle Zahlen stammen
+aus tatsächlich ausgeführten Läufen auf echten Kraken-Daten bzw. aus dem laufenden Betrieb.
+Keine Zugangsdaten enthalten.
+
+**Deine Rolle:** Du bist mein kritischer Sparringspartner. Ich will mit dir besprechen, was wir als
+Nächstes machen. Bitte sei ehrlich, rechne nach, und sag klar, wenn eine Idee nach Gebühren nicht
+aufgeht. Keine Versprechen, keine Anlageberatung – mir geht es um eine nüchterne Bewertung.
 
 ---
 
-## 1. Ziel und Rahmen
+## 1. Wer ich bin, was ich will
 
-- **Nutzer:** Privatperson in Österreich, MacBook Air M2, Kraken-Konto, kleines Budget.
-- **Wunsch des Nutzers:** Ein selbstständiger Krypto-Bot, der möglichst viel Gewinn macht, idealerweise
-  häufig handelt („Daytrading“) und sich monatlich „selbst finanziert“. Zwischenziel: in ≥ 70 % der
-  Zeiträume im Plus, Verlustrisiko möglichst klein.
-- **Börse:** Kraken Spot (EUR-Paare XBTEUR, ETHEUR). Kein Hebel, keine Derivate.
-- **Gebühren (öffentliche Kraken-Pro-Seite, Stufe 1, < 2.500 USD 30-Tage-Volumen, abgerufen
-  17.10.2026):** 0,40 % Maker / **0,80 % Taker** je Order. Ein Kauf + Verkauf kostet also 0,8–1,6 %.
-- **Mindestorder Kraken:** BTC 0,00006 (≈ 4,35 € bei 72.500 €), ETH 0,002 (≈ 4,27 €), mind. 0,45 €.
+- Privatperson in Österreich, MacBook Air M2, Kraken-Konto, kleines Kapital (aktuell 19 € echt).
+- Wunsch: ein selbstständiger Krypto-Bot, der oft handelt („Daytrading“, kleine Chancen nutzen),
+  idealerweise wie die Copy-Trading-Bots aus Videos (Memecoins auf Solana), mit möglichst wenig
+  Verlustrisiko. Ursprüngliches Zwischenziel: in ≥ 70 % der Zeiträume im Plus.
+- Vorstellung „jeder Trade soll nur die Gebühren reinholen und mit Plus rausgehen“ – siehe Abschnitt 7,
+  warum das so nicht funktioniert.
 
-## 2. Technik
+## 2. Technik (kurz)
 
-- Python 3.12, eigenes Paket `tradikg_bot`, 349 automatische Tests (pytest), Lint mit ruff.
-- Repository: GitHub `Linxreen3D/Tradikg-bot`, Arbeitsbranch `mac/first-real-test`, Pull Request #5
-  gegen `integration/mac-test` (nicht gemergt).
-- Datenhaltung: SQLite unter `~/.tradikg/` (Kerzen, Research, Paper-Konto, Replays, Logs).
-- **Daten:** offizielle Kraken-OHLCVT-Daten. Das ~9,5-GB-Komplettarchiv wird per HTTP-Range nur
-  teilweise gelesen (nur benötigte CSVs, z. B. 16–21 MB). Verfügbar: BTC ab 09/2013, ETH ab 08/2015,
-  SOL ab 06/2021, jeweils 1d, 4h, 1h, 15m (BTC 15m: 448.136 Kerzen). Danach REST-API bis heute.
-  Qualitätsbericht: keine ungültigen Kerzen/Duplikate, wenige Lücken in frühen Jahren.
-- **Paper-Engine:** simuliert Kraken realistisch – Maker/Taker-Gebühren, Spread, Slippage,
-  Mindestorder, Ausführung erst zur nächsten Kerze, SL/TP-Reihenfolge konservativ („Stop zuerst“),
-  Ledger 33/33/34 (Gewinnverteilung erst nach Verlustaufholung), Kill Switch, Instanzsperre,
-  Neustart ohne Doppelverarbeitung.
-- **Werkzeuge:** Walk-Forward-Replay mit Holdout, Research-Engine (Train/Validation/Test,
-  Zufallsbaseline), Schnelldurchlauf `tradikg sim` (Bot an einem vergangenen Datum einsetzen und
-  vorspulen; Überblick über alle 1-Jahres-Zeiträume seit 2019), Dashboard (Streamlit, lokal).
+- Python 3.12, eigenes Paket `tradikg_bot`, 365 automatische Tests, Lint mit ruff.
+  GitHub `Linxreen3D/Tradikg-bot`, Arbeitsbranch `mac/first-real-test`, Pull Request #5 (nicht gemergt).
+- Daten: offizielle Kraken-OHLCVT-Daten (BTC ab 2013, ETH ab 2015, SOL ab 2021; 1d/4h/1h/15m),
+  danach Kraken-REST bis heute. SQLite unter `~/.tradikg/`.
+- Werkzeuge: Paper-Engine (Kraken-Gebühren, Spread, Slippage, Mindestorder, Ausführung erst zur
+  nächsten Kerze, Stop vor Ziel), Walk-Forward-Replay, Research-Engine mit Train/Test-Trennung und
+  Zufallsbaseline, Schnelldurchlauf `tradikg sim` (Startdatum wählen, vorspulen, Überblick über alle
+  1-Jahres-Zeiträume), Streamlit-Dashboard mit Live-Ansicht.
+- Methodik: Entscheidungen nur mit Daten vor dem jeweiligen Zeitpunkt; Varianten werden auf
+  2016/2019–2022 gewählt und **einmal** auf 2023–2026 geprüft; gescheiterte Varianten werden nicht
+  nachjustiert.
 
-## 3. Methodik (gegen Selbsttäuschung)
+## 3. Gebühren – der entscheidende Faktor
 
-- Entscheidungen nur mit Daten **vor** dem jeweiligen Zeitpunkt (Kausalitätstests im Code).
-- Varianten werden **vorher** festgelegt, auf 2016/2019–2022 ausgewählt und **einmal** auf 2023–2026
-  geprüft. Gescheiterte Varianten werden nicht nachjustiert.
-- Fehler, die im Lauf gefunden wurden (alle behoben und mit Tests abgesichert): zu optimistischer
-  Rückkauf derselben Grid-Stufe in derselben Kerze; Doppelzählung bei Teilverkäufen im Live-Modul;
-  `paper run --once` ohne Instanzsperre; Risikoregler wurde vom Paper-Dienst nicht übernommen.
+- **Kraken Spot Stufe 1:** 0,40 % Maker / 0,80 % Taker je Order → Kauf + Verkauf = **0,8–1,6 %**.
+- Mindestorder Kraken: ≈ 4–5 € je Coin. Spread BTC/EUR heute ≈ 0,0001 %, Tagesumsatz 8,3 Mio. €.
+- **One Trading (Wien)** wurde als günstigere Börse geprüft (0,10/0,20 %, „API Trading“
+  −0,005/0,015 % gelistet). **Ergebnis 18.10.2026:** Der Euro-Spot-Handel (BTC/EUR, ETH/EUR) ist dort
+  **geschlossen** (letzte Kerze 18.01.2026). Aktiv sind nur BTC/USDC und ETH/USDC (Spread 0,04–0,05 %,
+  Tagesumsatz nur ≈ 650 bzw. 7.400 USDC), der Euro-Zugang USDC/EUR hat ein leeres Orderbuch.
+  Sonst nur Futures (mit Hebel). → Für uns aktuell keine Alternative. Eine Support-Anfrage läuft noch.
 
 ## 4. Ergebnisse aller getesteten Ansätze
 
-### 4.1 Ursprünglicher Signal-Bot (7 Strategiefamilien, Bracket SL/TP, Netto-EV-Filter)
-- 1d (2 Jahre): 0 Trades – keine Strategie nach Kosten bestätigt. Buy & Hold im selben Zeitraum −47 %.
-- 1h/15m/5m: 0 Trades – Kostenfilter blockiert alles (Ziele kleiner als 1,6 % Round-Trip).
-- Mit 13 Jahren Historie (1d, Walk-Forward 12/2018–03/2024): 100 € → 126,69 €, 65 Trades, Max. DD −7,6 %
-  (Buy & Hold 2.954 €). Nutzte im Schnitt nur 6,56 € je Trade (1 % Risiko bei weitem Stop).
-- Schnelldurchlauf ab 10/2025, 10/2024, 01/2023: −6,1 %, −6,3 %, −2,6 %.
+### 4.1 Signal-Bot (7 Strategiefamilien, Stop/Ziel, Kostenfilter) – verworfen
+1h/15m/5m: 0 Trades, weil jedes Ziel kleiner als die Kosten war. 1d über 13 Jahre: 100 € → 127 €
+(Buy & Hold: 2.954 €). Schnelldurchläufe ab 2023/2024/2025: −2,6 % bis −6,3 %.
 
-### 4.2 Trendfolge-Allokation (aktuell beste Variante)
-Regel: BTC und ETH je zur Hälfte. Kauf, wenn Tagesschluss > 200-Tage-Durchschnitt; Verkauf darunter;
-Notfall-Stop 20 % unter dem höchsten Schluss seit Einstieg (nachgezogen), danach Sperre bis neues
-Kreuzen; Orders als Maker-Limit, sonst Taker. Risikoregler `invest_fraction`.
+### 4.2 Trendfolge mit 200-Tage-Linie – beste Variante, läuft mit Echtgeld
+Regel: BTC und ETH je zur Hälfte; kaufen, wenn Tagesschluss über dem 200-Tage-Durchschnitt; verkaufen
+darunter; Notfall-Stop 20 % unter dem Höchststand seit Kauf (nachgezogen); Maker-Limit, sonst Taker.
 
-82 Ein-Jahres-Zeiträume (Start monatlich 01/2019–10/2025), 100 € Start, ohne Cash-Zins:
+82 Ein-Jahres-Zeiträume (Start monatlich 01/2019–10/2025), 100 € Start:
 
-| investiert max. | Jahre im Plus | Median-Jahr | schlechtestes Jahr | Ø Max. DD (schlimmster) | schlechtester Monat |
-|---|---|---|---|---|---|
-| 100 % | 76 % | +25 % | −30 % | −24 % (−38 %) | −16 % |
-| 50 % | 79 % | +13 % | −16 % | −14 % (−24 %) | −9 % |
-| Buy & Hold | 67 % | +45 % | −70 % | – | – |
+| investiert max. | Jahre im Plus | Median-Jahr | schlechtestes Jahr | schlechtester Monat |
+|---|---|---|---|---|
+| 100 % | 76 % | +25 % | −30 % | −16 % |
+| 50 % | 79 % | +13 % | −16 % | −9 % |
+| Buy & Hold | 67 % | +45 % | −70 % | – |
 
-- Monate im Plus nur ≈ 37 % (Cash-Monate zählen als 0); mit 2 % Cash-Zins ≈ 62 %.
-- Variante „Volatilitätssteuerung + monatliche Entscheidung“ wurde auf 2016–2022 gewählt (78 %
-  Plus-Monate), fiel aber auf 2023–2026 durch (38 % Plus-Jahre, ≈ 4 % p.a.) → nicht übernommen.
-- Einschränkung: Die 200-Tage-Regel ist bekannt und wurde vor dem Einbau auf denselben Daten
-  angesehen; kein Parameter optimiert, aber kein unabhängiger Beweis. Letzte 12 Monate ≈ −1 %.
+- Nur ≈ 37 % der **Monate** im Plus (Monate ohne Position zählen als 0). „≥ 70 % Monate im Plus“
+  ist damit nicht erreichbar. Letzte 12 Monate ≈ −1 %.
+- Eine Variante mit Volatilitätssteuerung sah auf 2016–2022 gut aus, fiel auf 2023–2026 durch → verworfen.
+- Einschränkung: Die 200-Tage-Regel ist allgemein bekannt; kein Parameter optimiert, aber auch kein
+  unabhängiger Beweis. Der echte Test ist der Vorwärtsbetrieb.
 
-### 4.3 Grid-Daytrading (Netzhandel, nur Paper)
-Netz 3 % unter Referenzkurs, 5 Stufen je Coin, Verkauf 3 % über Kaufpreis (Maker), Notbremse −10 %
-(Taker), Käufe nur im Aufwärtstrend. Einstellungen auf 2019–2022 gewählt (dort verloren alle
-Abstände 1–3 % zwischen 32 und 83 %).
-- 12 Monate bis 10/2026: 100 € → 102,05 € (91 Trades). Seit 01/2023: 84,45 € (522 Trades).
-- Mit 19 € real nicht möglich (1,90 € je Stufe < Kraken-Mindestorder).
+### 4.3 Grid-Daytrading (Netz aus 5 Kauf-Stufen im Abstand 3 %, Verkauf 3 % höher) – kein Vorteil
+12 Monate: 100 € → 102 € (91 Trades). Seit 01/2023: 100 € → 84 € (522 Trades). Mit 19 € nicht machbar
+(1,90 € je Stufe < Mindestorder).
 
-### 4.4 Daytrading-Studie (5 Strategien aus Literatur/Praxis, 15m/1h, je mit/ohne Trendfilter)
-Bollinger-Rückkehr (1h), RSI(2)-Connors (1h), Intraday-Momentum nach Shen/Urquhart/Wang 2022 (15m),
-Donchian-Ausbruch mit Trailing-Stop (1h), VWAP-Rückkehr (15m). Volles Kapital je Trade, Maker-Einstieg,
-Maker-Ziel, Taker-Stop. 100 € (50 € BTC + 50 € ETH):
+### 4.4 Daytrading-Studie (5 Strategien aus Literatur/Praxis, 15m/1h)
+Bollinger-Rückkehr, RSI(2), Intraday-Momentum (Shen/Urquhart/Wang 2022), Donchian-Ausbruch, VWAP-Rückkehr.
 
-| Gebühren | Ergebnis |
+| Gebühren | Ergebnis (100 € Start, Train 2019–22 und Test 2023–26) |
 |---|---|
-| Kraken Stufe 1 (0,4/0,8 %) | **alle 10 Varianten → nahezu 0 €** (Train und Test), 0,4–1,6 Trades/Tag |
-| Profi (0,1/0,2 %) | alle verlieren: 22–61 € |
-| ohne Gebühren | nur Donchian (Train 199 €, Test 150 €) und VWAP (123 €, 131 €) in beiden Zeiträumen positiv |
+| Kraken (0,4/0,8 %) | **alle Varianten → nahezu 0 €** |
+| 0,1/0,2 % | alle verlieren (22–61 €) |
+| ohne Gebühren | nur Donchian und VWAP in beiden Zeiträumen positiv |
+| −0,005/0,015 % (One-Trading-API) | Donchian/VWAP positiv – aber nur bei sehr geringer Slippage |
 
-Fazit: Es gibt einen kleinen Brutto-Effekt, aber die Gebühren eines Privatkunden fressen ihn um ein
-Vielfaches auf. Häufiges Handeln verschlechtert das Ergebnis.
+Fazit: Es gibt einen kleinen Brutto-Effekt, die Gebühren eines Privatkunden fressen ihn aber um ein
+Vielfaches auf. Häufiger handeln = schlechter. Da One Trading keinen Euro-Spot mehr anbietet, ist
+Daytrading laut unserem vorher festgelegten Plan beendet.
 
-## 5. Was aktuell läuft
+### 4.5 Funding-Carry (Idee, nicht gebaut)
+Spot kaufen + gleich viel auf dem Perpetual-Future leerverkaufen → kursneutral, man kassiert Funding.
+Kraken-Futures, letzte 12 Monate: +3,2 % (BTC) / +3,5 % (ETH), 77 % der Monate im Plus, schlechtester
+Monat −0,28 % (vor Gebühren). Offen: Verfügbarkeit von Kraken-Futures in Österreich für mich,
+Mindestgrößen, Sicherheiten/Liquidationsrisiko auf der Short-Seite.
 
-1. **Paper-Bot (virtuell, 100 €):** Grid-Daytrading auf 1h-Kerzen, BTC/ETH, echte Kraken-Kurse,
-   seit 18.10.2026 01:48 UTC. Sichtbar im Dashboard.
-2. **Echtgeld-Bot (19 €, gestartet vom Nutzer am 18.10.2026 01:52 UTC):** Trendfolge (Abschnitt 4.2),
-   100 % investiert, je ≈ 9,42 € BTC/ETH als Maker-Kauflimit. Sicherheit:
-   - API-Key nur mit Abfrage-/Order-Rechten, **ohne Auszahlung** (vom Bot geprüft, sonst Abbruch).
-   - Budget hart ≤ 50 €, nur Spot, nur eigene Mengen (Kennung `userref`), idempotent nach Absturz.
-   - **Stop-Loss liegt direkt bei Kraken** (funktioniert auch bei schlafendem Mac), wird täglich
-     nachgezogen. Kraken-Spot-API kann nur *einen* Folgeauftrag (kein SL+TP-OCO) – deshalb ist nur
-     die Trendfolge (braucht keinen Take-Profit) für Echtgeld vorgesehen.
-   - Probelauf mit `validate=true` war erfolgreich; Kill Switch vorhanden.
+### 4.6 Copy-Trading (Memecoins auf Solana) – nur virtuell
+- Sammler: alle 2,5 min die 20 trendenden Solana-Pools + je 300 letzte Trades mit Wallet-Adresse
+  (öffentliche GeckoTerminal-API). Lücken bei sehr aktiven Pools möglich.
+- Simulator: bewertet Wallets nur mit Trades der letzten 3 Stunden (abgeschlossene Runden, ROI,
+  Trefferquote), folgt den besten 3, prüft alle 30 min neu, kopiert jeden Kauf mit 10 % des Guthabens
+  zum **ersten echten Preis nach 10 s Verzögerung**; Kosten: DEX 0,25 %, Copy-Bot-Gebühr 1 % je Seite,
+  0,01 $ Netz, Preiseinfluss; feuert eine Wallet nach 2 Verlusten in Folge.
+- Rückblick über die Nacht: 100 $ → 102,80 $ (19 Trades) – kurzer Zeitraum, keine Aussagekraft.
+- Live-Simulation seit 18.10. 11:41 Wiener Zeit: **99,17 $, 0 abgeschlossene Trades, 2 offene**.
+- Echtes Copy-Trading bräuchte eine Solana-Wallet mit privatem Schlüssel und DEX-Anbindung; Kraken
+  handelt diese Coins nicht. Prüfpunkt: nach 7 Tagen ≥ 100 kopierte Trades netto im Plus **und**
+  besser als eine zufällig gewählte Wallet – sonst beenden.
 
-## 6. Ehrliche Gesamteinschätzung
+## 5. Was gerade läuft
 
-- Mit Kraken-Privatkunden-Gebühren hat keine getestete Daytrading-Strategie einen Vorteil.
-- Die Trendfolge mit Risikoregler ist die einzige Variante mit robusten Ergebnissen (76–79 % der
-  1-Jahres-Zeiträume im Plus), handelt aber selten (≈ 6–8 Trades/Jahr/Coin) und hat Verlustjahre.
-- Mit 20 € ist „Selbstfinanzierung“ nicht realistisch: +25 % Median-Jahr ≈ 5 € pro Jahr.
-  Für ≈ 20 € pro Monat bräuchte es im Mittel ≈ 1.000 € Kapital – mit Verlustjahren von bis zu −30 %.
-- Nicht unabhängig bestätigt: Der eigentliche Test ist der Vorwärts-Betrieb ab 18.10.2026.
+1. **Echtgeld-Trendfolge (19 € Budget, Kraken):** gekauft am 18.10. 11:58 Wiener Zeit
+   – BTC 0,00012834 zu 73.064,50 € (Gebühr 0,075 €), Stop bei Kraken 58.451,60 €
+   – ETH 0,00434782 zu 2.156,86 € (Gebühr 0,075 €), Stop bei Kraken 1.725,48 €
+   – Wert laut API jetzt ≈ 18,84 € (Differenz = Gebühren + Spread). Der Bot prüft alle 5 Minuten;
+     verkauft wird nur, wenn der Tagesschluss unter die 200-Tage-Linie fällt oder der Stop greift.
+   – Sicherheit: API-Key ohne Auszahlungsrecht (Bot bricht sonst ab), Budget hart ≤ 50 €, nur Spot,
+     Stops liegen bei Kraken (wirken auch bei ausgeschaltetem Mac), Kill Switch, keine doppelten
+     Orders nach Absturz.
+2. **Grid-Paper-Bot (100 € virtuell):** seit 18.10. nachts, bisher keine abgeschlossenen Trades (Kontostand 100,00 €).
+3. **Copy-Live-Simulation (100 $ virtuell):** siehe 4.6.
+4. **Dashboard:** zeigt alle drei live (Echtgeld mit Grafiken, Copy-Bot im Stil der Videos).
 
-## 7. Fragen an den Prüfer
+## 6. Entscheidungsplan (vorher festgelegte Ja/Nein-Kriterien)
 
-1. Sind Methodik (Train/Test-Trennung, Kausalität, Gebührenmodell) und Ausführungsmodell plausibel?
-2. Übersehen wir einen Ansatz, der bei 0,4/0,8 % Gebühren und 20–100 € Kapital realistisch einen
-   Vorteil haben kann?
-3. Ist die Echtgeld-Absicherung (Stop bei Kraken, Budgetdeckel, Rechte ohne Auszahlung) ausreichend?
-4. Ist die Erwartung (kein verlässliches Monatseinkommen aus kleinem Kapital) zutreffend?
+| # | Was | Status |
+|---|---|---|
+| 1 | One-Trading-Support: API-Gebühren für Privatkunden? | Frage wird gesendet, Antwort offen |
+| 2 | One-Trading-Orderbuch messen (Spread ≤ 5 Bp., Tiefe ≥ 5.000 €) | **❌ Euro-Spot geschlossen** |
+| 3 | Daytrading-Paper-Bot mit One-Trading-Kursen | entfällt wegen 2 |
+| 5 | Kraken-Futures im Konto verfügbar? (für Funding-Carry) | ich prüfe |
+| 6 | Copy-Trading nach 7 Tagen auswerten (≈ 25.10.) | läuft |
+| 7 | Echtgeld-Trendfolge verhält sich wie im Test | läuft |
+| 8 | Grid-Paper nach 3 Wochen ≥ 100 € | läuft, sonst abschalten |
 
-## 8. Wichtige Befehle (zur Nachprüfung)
+## 7. Was wir gelernt haben (meine ehrliche Zusammenfassung)
 
-```bash
-tradikg data quality --timeframes 1d,1h,15m       # Datenqualität
-tradikg sim --start 2025-01-01 --overview         # Trendfolge-Schnelldurchlauf + 1-Jahres-Überblick
-tradikg sim --mode grid --timeframe 1h --start 2023-01-01
-tradikg live status                                # Echtgeld-Bot (nur lesend)
-scripts/run_tests.sh                               # alle Tests
-```
+- „Nur mit Plus rausgehen“ geht nicht: Ob ein Trade aufgeht, weiß man vorher nicht. Wer nie mit
+  Verlust verkauft, hat sein Geld irgendwann in fallenden Coins festsitzen (genau das passiert im Grid-Test).
+- Bei 0,8–1,6 % Kosten pro Runde braucht jede Strategie Bewegungen deutlich größer als das – deshalb
+  gewinnt seltener Handel (Trendfolge) und verliert häufiger Handel.
+- Mit 19–100 € ist kein spürbares Einkommen möglich: selbst +25 % im Jahr wären bei 100 € 25 €.
+- Videos mit 42 $ → 1.885 $ in 24 h sind nicht überprüfbar; unser Simulator rechnet Verzögerung und
+  Gebühren ehrlich mit.
 
-Quellen Recherche: Shen, Urquhart & Wang (2022) „Bitcoin Intraday Time-Series Momentum“, Financial
-Review; „On the Intraday Behavior of Bitcoin“, Ledger; Theseus-Abschlussarbeit 2025 (Bollinger vs.
-Momentum); Kraken-Gebührenseite und Kraken-API-Doku (AddOrder).
+## 8. Fragen, die ich mit dir besprechen will
 
-## 9. Nachtrag: Copy-Trading-Simulator (18.10.2026, nur virtuell)
-
-Anlass: Video eines „Copy-Trading-Bots“ (Memecoins auf Solana, 42 $ → 1.885 $ in 24 h, nicht
-überprüfbar). Gebaut wurde ausschließlich ein Simulator – keine Wallet, keine Orders.
-
-- **Sammler** `tradikg copy collect`: alle ~2,5 min die 20 trendenden Solana-Pools und je Pool die letzten
-  300 Trades (mit Wallet-Adresse) von der öffentlichen GeckoTerminal-API in SQLite. Grenze: bei sehr
-  aktiven Pools fehlen Trades zwischen zwei Abrufen (Abdeckung wird im Bericht ausgewiesen).
-- **Simulator** `tradikg copy simulate`: Auswahl des besten Traders nur aus Trades der letzten
-  3 Stunden (≥ 3 abgeschlossene Runden, Ø ≥ 20 $, keine Hochfrequenz-Bots, ROI > 0); jeder Kauf wird mit
-  10 % des Guthabens kopiert, Verkauf mitgemacht, max. 5 Positionen, max. 12 h Haltedauer.
-  Ausführung zum **ersten echten Preis nach der Verzögerung** (Standard 10 s); Kosten: DEX 0,25 %,
-  Copy-Bot 1 % je Seite, 0,01 $ Netz, Preiseinfluss ≈ Ordergröße / (Reserve/2). Feuern nach 2
-  Verlusten in Folge. Vergleich: Trader selbst ohne Verzögerung/Kosten sowie 2/10/30/60 s.
-- Erster Lauf nach ~10 min Sammeln: 100 $ → 99,37 $ bei nur 2 kopierten Trades – noch ohne Aussagekraft.
-- Offene Frage an den Prüfer: Ist dieses Modell (insbesondere Preis nach Verzögerung, Preiseinfluss,
-  Auswahl nach kurzfristigem ROI) realistisch genug, um Copy-Trading von Memecoins fair zu bewerten?
-
-## 10. Nachtrag: Gebühren-Hebel und nächste Entscheidungen
-
-Siehe `docs/PLAN_NAECHSTE_SCHRITTE.md`. Kurz: Daytrading-Strategien (Donchian 1h, VWAP 15m) wären nur
-mit One-Tradings „API Trading“-Gebühren (−0,005/0,015 %, Verfügbarkeit für Privatkunden ungeklärt)
-in Training und Test positiv; mit 0,5 % Stop-Slippage auch dort nicht. Funding-Carry auf Kraken-Futures
-(12 Monate): +3,2–3,5 %, 77 % Monate im Plus, schlechtester Monat −0,28 %. Entscheidungsplan mit
-festen Ja/Nein-Kriterien.
+1. Was sollte ich als Nächstes tun: Trendfolge einfach laufen lassen, Funding-Carry bauen, Copy-Trading
+   weiter beobachten – oder etwas ganz anderes?
+2. Gibt es einen Ansatz, der bei 0,4/0,8 % Gebühren und 20–100 € Kapital realistisch einen Vorteil haben
+   kann? Oder eine EU-Börse mit Euro-Spot und deutlich niedrigeren Gebühren für Privatkunden per API?
+3. Ist unser Copy-Trading-Modell (Preis nach Verzögerung, Preiseinfluss, Auswahl nach kurzfristigem ROI)
+   realistisch genug? Welche Risiken übersehen wir bei Memecoins (Rug Pulls, Bots, MEV/Sandwich)?
+4. Ist die Echtgeld-Absicherung ausreichend?
+5. Ab welchem Kapital und mit welcher Erwartung lohnt sich das Ganze überhaupt?

@@ -101,6 +101,9 @@ class FakeKraken:
         self.bal[base] += sign * vol
         self.bal["ZEUR"] -= sign * vol * px + o.fee
 
+    def open_orders(self):
+        return self.open()
+
     def open(self, kind=None):
         return [
             o
@@ -271,8 +274,13 @@ def test_crash_between_send_and_save_does_not_duplicate_order(tmp_path):
     r._save = lambda: None  # Absturz: Zustand wird nie gespeichert
     r.run_once()
     assert len(fake.orders) == 2
-    runner(tmp_path, fake, m).run_once()  # Neustart ohne Zustand
-    assert len(fake.orders) == 2  # nichts doppelt gesendet, Orders übernommen
+    with pytest.raises(LiveSafetyError, match="Zustand"):  # Neustart ohne Zustand: Halt
+        runner(tmp_path, fake, m).run_once()
+    assert len(fake.orders) == 2  # nichts doppelt gesendet
+    del r._save  # Datei wiederhergestellt
+    r._save()
+    runner(tmp_path, fake, m).run_once()
+    assert len(fake.orders) == 2  # gleiche userref: Orders übernommen statt neu gesendet
 
 
 def test_buy_now_replaces_limit_buys_immediately_and_sets_stop(tmp_path):
@@ -308,3 +316,86 @@ def test_buy_now_respects_downtrend_and_kill_switch(tmp_path):
     (tmp_path / "KILL").touch()
     runner(tmp_path, fake, m).buy_now()
     assert not fake.orders
+
+
+# -- Audit Punkt 8: Wiederanlauf nach Mac-Ausfall, Neustart, API-Timeout -----------------
+
+
+def _bought(tmp_path):
+    """Position BTC+ETH gekauft, Stops bei Kraken gesetzt."""
+    fake, m = FakeKraken(), Market()
+    m.day(110)
+    r = runner(tmp_path, fake, m)
+    r.run_once()
+    for o in list(fake.open("limit")):
+        fake.fill(o.txid)
+    r.run_once()
+    assert len(fake.open("stop-loss")) == 2
+    return fake, m
+
+
+def test_restart_keeps_existing_stops_untouched(tmp_path):
+    fake, m = _bought(tmp_path)
+    before = {o.txid: (o.price, o.volume) for o in fake.open("stop-loss")}
+    n_orders = len(fake.orders)
+    runner(tmp_path, fake, m).run_once()  # Neustart, gleicher Tag
+    assert {o.txid: (o.price, o.volume) for o in fake.open("stop-loss")} == before
+    assert len(fake.orders) == n_orders  # nichts Neues gesendet
+
+
+def test_stop_filled_while_mac_was_off_is_booked_and_blocks(tmp_path):
+    fake, m = _bought(tmp_path)
+    stop = next(o for o in fake.open("stop-loss") if o.pair == "XBTEUR")
+    fake.fill(stop.txid, price=85.0)
+    m.day(111)  # Mac wieder an, Kurs wieder über SMA
+    r = runner(tmp_path, fake, m)
+    r.run_once()
+    st = r.state.symbols["XBTEUR"]
+    assert st.units == 0 and st.blocked and st.stop_txid is None
+    assert not [o for o in fake.open() if o.pair == "XBTEUR"]  # kein Rückkauf
+
+
+def test_api_timeout_mid_run_changes_nothing_and_next_run_recovers(tmp_path):
+    fake, m = _bought(tmp_path)
+    before = {o.txid for o in fake.open("stop-loss")}
+    state_before = (tmp_path / "state.json").read_text()
+
+    def flaky(sym):
+        raise TimeoutError("Kraken antwortet nicht")
+
+    m.day(130)  # neuer Tag: Stop müsste nachgezogen werden
+    with pytest.raises(TimeoutError):
+        runner(tmp_path, fake, flaky).run_once()
+    assert {o.txid for o in fake.open("stop-loss")} == before
+    assert (tmp_path / "state.json").read_text() == state_before
+    r = runner(tmp_path, fake, m)
+    r.run_once()  # nächster Durchgang
+    stops = fake.open("stop-loss")
+    assert len(stops) == 2
+    assert r.state.symbols["XBTEUR"].stop_price == pytest.approx(104.0)  # 130 × 0,8
+
+
+def test_timeout_while_cancelling_stop_leaves_a_stop_after_next_run(tmp_path):
+    fake, m = _bought(tmp_path)
+    real_cancel = fake.cancel_order
+
+    def cancel_then_timeout(txid):
+        real_cancel(txid)
+        raise TimeoutError("Antwort verloren")
+
+    fake.cancel_order = cancel_then_timeout
+    m.day(130)
+    with pytest.raises(TimeoutError):
+        runner(tmp_path, fake, m).run_once()
+    fake.cancel_order = real_cancel
+    runner(tmp_path, fake, m).run_once()
+    assert {o.pair for o in fake.open("stop-loss")} == {"XBTEUR", "ETHEUR"}
+
+
+def test_lost_state_file_never_buys_twice_while_bot_orders_are_open(tmp_path):
+    fake, m = _bought(tmp_path)
+    fake.bal["ZEUR"] += 20.0  # Nutzer zahlt nach
+    (tmp_path / "state.json").unlink()  # Zustand verloren (Festplatte, versehentlich gelöscht)
+    with pytest.raises(LiveSafetyError, match="Zustand"):
+        runner(tmp_path, fake, m).run_once()
+    assert not [o for o in fake.open() if o.side == OrderSide.BUY]

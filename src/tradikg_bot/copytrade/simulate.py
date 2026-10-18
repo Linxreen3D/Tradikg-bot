@@ -41,6 +41,7 @@ class CopyConfig:
     followers: int = 3  # so viele Top-Trader gleichzeitig kopieren
     rerank_min: float = 30.0  # Rangliste alle 30 min neu
     active_min: float = 60.0  # nur Trader, die in der letzten Stunde gehandelt haben
+    random_seed: int | None = None  # Vergleich: zufällige statt beste Wallets (ohne ROI-Filter)
 
 
 def load_trades(db: str | Path, since: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -94,8 +95,10 @@ def wallet_stats(trades: pd.DataFrame) -> pd.DataFrame:
 
 
 def rank_wallets(
-    trades: pd.DataFrame, cfg: CopyConfig, exclude: set[str] = frozenset()
+    trades: pd.DataFrame, cfg: CopyConfig, exclude: set[str] = frozenset(), rng=None
 ) -> pd.DataFrame:
+    """Beste Wallets nach ROI; mit ``rng`` stattdessen zufällige Reihenfolge aller aktiven
+    Wallets (gleiche Mindestanforderungen, aber ohne ROI-Filter) als Vergleichsmaßstab."""
     st = wallet_stats(trades)
     if st.empty:
         return st
@@ -103,9 +106,11 @@ def rank_wallets(
         (st["rounds"] >= cfg.min_rounds)
         & (st["avg_usd"] >= cfg.min_trade_usd)
         & (st["trades"] <= cfg.max_trades)
-        & (st["roi"] > 0)
         & ~st["wallet"].isin(exclude)
     )
+    if rng is not None:
+        return st[ok].sample(frac=1, random_state=rng).reset_index(drop=True)
+    ok &= st["roi"] > 0
     return st[ok].sort_values(["roi", "win_rate"], ascending=False).reset_index(drop=True)
 
 
@@ -187,6 +192,7 @@ def simulate_copy(
         )
     reserve = dict(zip(pools["pool"], pools["reserve_usd"], strict=True))
     prices = _Prices(trades)
+    rng = None if cfg.random_seed is None else np.random.default_rng(cfg.random_seed)
     cash, positions = cfg.capital, {}
     res = CopyResult(cfg, pd.Series(dtype=float), start=start, end=end)
     fired: set[str] = set()
@@ -206,7 +212,7 @@ def simulate_copy(
         active = set(
             window.loc[window["ts"] >= ts - pd.Timedelta(minutes=cfg.active_min), "wallet"]
         )
-        ranked = rank_wallets(window, cfg, fired)
+        ranked = rank_wallets(window, cfg, fired, rng)
         ranked = ranked[ranked["wallet"].isin(active)].head(cfg.followers)
         new = list(ranked["wallet"])
         for _, top in ranked.iterrows():

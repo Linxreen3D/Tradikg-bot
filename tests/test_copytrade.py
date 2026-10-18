@@ -229,3 +229,11 @@ def test_live_runner_writes_snapshot_from_fixed_start(tmp_path):
     assert snap["leaders"] == ["GOOD"] and len(snap["open"]) == 1  # Position bleibt offen
     assert snap["balance"] == pytest.approx(90 + 10 / 1.1 * 1.3)  # zum letzten Kurs bewertet
     assert json.loads(out.read_text())["start"] == snap["start"]
+
+
+def test_random_baseline_ignores_roi_but_keeps_activity_filters():
+    import numpy as np
+
+    rows = history() + [tr(10 + i, "BOT", "buy", 100, 1.0) for i in range(300)]
+    ranked = rank_wallets(frame(rows), CopyConfig(), rng=np.random.default_rng(0))
+    assert set(ranked["wallet"]) == {"GOOD", "BAD"}  # Verlierer dabei, Bot nicht

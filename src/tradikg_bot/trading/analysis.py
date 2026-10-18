@@ -159,3 +159,58 @@ def daily_report(day: str, analyses: list[dict[str, Any]]) -> tuple[str, dict[st
     lines += ["", "## Verbesserungshypothesen (nur zum Testen, nicht aktiviert)", ""]
     lines += [f"- {h}" for h in hypotheses] or ["- keine"]
     return "\n".join(lines), payload
+
+
+# -- Nachanalyse für Trendfolge, Grid und Echtgeld (Audit Punkt 5) ----------------------------
+LOSS_CLASSES = (
+    "Gewinn",
+    "Gebührenproblem",
+    "Ausführungsfehler",
+    "Prognosefehler",
+    "normaler statistischer Verlust",
+)
+
+
+def classify_trade(
+    gross: float,
+    net: float,
+    slippage: float | None = None,
+    ref_loss_p10: float | None = None,
+    loss_pct: float | None = None,
+) -> str:
+    """Ordnet einen abgeschlossenen Trade genau einer Ursache zu (Reihenfolge = Vorrang).
+
+    * Gebührenproblem: brutto im Plus, netto nicht.
+    * Ausführungsfehler: Ausführung > 0,5 % ungünstiger als der Entscheidungskurs.
+    * Prognosefehler: Verlust größer als die schlechtesten 10 % der historischen Verluste
+      (``ref_loss_p10``, z. B. −0,15) – die Strategie verhält sich anders als getestet.
+    * sonst: normaler statistischer Verlust (im Rahmen dessen, was die Tests erwarten lassen).
+    """
+    if net > 0:
+        return "Gewinn"
+    if gross > 0:
+        return "Gebührenproblem"
+    if slippage is not None and slippage < -0.005:
+        return "Ausführungsfehler"
+    if ref_loss_p10 is not None and loss_pct is not None and loss_pct < ref_loss_p10:
+        return "Prognosefehler"
+    return "normaler statistischer Verlust"
+
+
+HYPOTHESES = {
+    "Gebührenproblem": "Weniger, größere Bewegungen handeln oder konsequent Maker-Orders nutzen.",
+    "Ausführungsfehler": "Ordertyp/Zeitpunkt prüfen (Maker-Limit, kein Warten bis zum Fallback).",
+    "Prognosefehler": "Regel verhält sich anders als im Test: Regime/Datenbasis prüfen.",
+}
+
+
+def hypotheses(classes: list[str]) -> list[str]:
+    """Verbesserungsideen aus gehäuften Ursachen – nie automatisch aktiv. Prüfung nur auf
+    getrennten Daten: Kerzen nach dem Audit (18.10.2026) oder nicht genutzte Coins (z. B. SOL)."""
+    n = len(classes)
+    out = []
+    for cls, idea in HYPOTHESES.items():
+        k = classes.count(cls)
+        if k and (k >= 2 or n < 5):
+            out.append(f"{cls} ({k}/{n}): {idea} Nur auf getrennten Daten testen.")
+    return out
