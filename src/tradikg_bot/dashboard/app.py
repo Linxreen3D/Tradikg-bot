@@ -44,7 +44,7 @@ def main() -> None:
             "AI Research",
             "System Health",
             "Einstellungen",
-            "Schnelldurchlauf",
+            "▶ Testdurchlauf",
         ]
     )
     b = q.balances(cfg)
@@ -210,33 +210,66 @@ def main() -> None:
 
 
 def _simulation_tab(cfg: PlatformConfig) -> None:
-    """Bot ab einem vergangenen Datum einsetzen und vorspulen (ruft `tradikg sim` auf)."""
+    """Neuer Testdurchlauf per Knopf: Schnelldurchlauf ab Datum + Überblick (ruft `tradikg sim`)."""
     import subprocess
     import sys
 
     import streamlit.components.v1 as components
 
     st.markdown(
-        "Der Bot wird an einem Datum der Vergangenheit eingesetzt, kennt nur die Kerzen davor "
-        "und wird dann im Schnelldurchlauf bis heute simuliert (100 € und 10-€-Pilot, "
-        "virtuell, keine Orders)."
+        "Der Bot wird an einem Datum der Vergangenheit mit **100 € virtuell** eingesetzt, kennt "
+        "nur die Kurse davor und wird bis heute vorgespult. Der **Überblick** zeigt zusätzlich "
+        "jedes Jahr seit 2019 (jeden Monat neu gestartet). Keine echten Orders."
     )
     c = st.columns(3)
-    start = c[0].date_input("Startdatum", pd.Timestamp.now().normalize() - pd.DateOffset(years=1))
-    timeframe = c[1].selectbox("Kerzen", ["1d", "4h", "1h"], index=0)
-    every = c[2].number_input("Research alle N Kerzen", 10, 1000, 90)
-    if st.button("Schnelldurchlauf starten"):
-        with st.spinner("Simuliere … (1d: ca. 1–5 Minuten)"):
-            cmd = [sys.executable, "-m", "tradikg_bot", "sim", "--start", str(start)]
-            cmd += ["--timeframe", timeframe, "--research-every", str(every)]
-            done = subprocess.run(cmd, capture_output=True, text=True)
-        st.code(done.stdout[-3000:] + done.stderr[-2000:])
-    pages = sorted((cfg.home / "reports").glob("sim-*.html"), reverse=True)
-    if pages:
-        page = st.selectbox("Gespeicherte Schnelldurchläufe", pages, format_func=lambda p: p.name)
-        components.html(page.read_text(), height=1600, scrolling=True)
-    else:
-        st.info("Noch kein Schnelldurchlauf gespeichert.")
+    start = c[0].date_input(
+        "Bot einsetzen am", pd.Timestamp.now().normalize() - pd.DateOffset(years=1)
+    )
+    fraction = c[1].slider(
+        "Risikoregler: höchstens investiert",
+        0.1,
+        1.0,
+        float(cfg.invest_fraction),
+        0.1,
+        format="%.1f",
+        help="0.5 = höchstens die Hälfte des Kapitals im Markt (kleinere Verluste und Gewinne)",
+    )
+    cash_yield = c[2].number_input(
+        "Zins auf Cash p.a. (nur wenn real)",
+        0.0,
+        0.1,
+        float(cfg.cash_yield_pa),
+        0.005,
+        format="%.3f",
+    )
+    overview = st.checkbox("Überblick über alle Ein-Jahres-Zeiträume seit 2019", value=True)
+    if st.button("▶ Neuen Testdurchlauf starten", type="primary"):
+        cmd = [sys.executable, "-m", "tradikg_bot", "sim", "--start", str(start)]
+        cmd += ["--invest-fraction", str(fraction), "--cash-yield", str(cash_yield)]
+        cmd += ["--overview"] if overview else []
+        with st.spinner("Simuliere … (meist unter 1 Minute, höchstens 10 Minuten)"):
+            try:
+                done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                ok, log = done.returncode == 0, done.stdout[-2500:] + done.stderr[-1500:]
+            except subprocess.TimeoutExpired:
+                ok, log = False, "Abgebrochen: länger als 10 Minuten."
+        (st.success if ok else st.error)("Fertig – Ergebnis unten." if ok else "Fehlgeschlagen.")
+        with st.expander("Protokoll"):
+            st.code(log)
+    pages = sorted(
+        (cfg.home / "reports").glob("sim-*.html"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    if not pages:
+        st.info("Noch kein Testdurchlauf gespeichert – Knopf oben drücken.")
+        return
+    page = st.selectbox(
+        "Testdurchläufe (neuester zuerst)",
+        pages,
+        format_func=lambda p: (
+            f"{pd.Timestamp(p.stat().st_mtime, unit='s'):%d.%m.%Y %H:%M} – Start {p.name[4:14]}"
+        ),
+    )
+    components.html(page.read_text(), height=2200, scrolling=True)
 
 
 main()

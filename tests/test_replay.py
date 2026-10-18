@@ -416,3 +416,19 @@ def test_cli_sim_writes_html(home, tmp_path, capsys):
     out = capsys.readouterr().out
     assert f"Schnelldurchlauf {start}" in out and "Buy & Hold" in out
     assert list((home / "reports").glob("sim-*.html"))
+
+
+def test_trend_overview_restarts_monthly_and_renders(tmp_path):
+    from tradikg_bot.replay.simulate import render_html, rolling_overview, simulate_trend
+
+    data = phase_data(n=700)
+    replay = HistoricalReplay(data, tmp_path, ReplayConfig(**FAST), "synthetic", True)
+    idx = replay.plan.index
+    ov = rolling_overview(replay, idx[250], capital=100.0, invest_fraction=0.5, horizon_days=180)
+    assert len(ov) >= 5 and list(ov["start"]) == sorted(ov["start"])
+    assert ov["start"].dt.day.eq(1).all() and ov["max_dd"].le(0).all()
+    sim = simulate_trend(replay, idx[400], invest_fraction=0.5)
+    sim.overview = ov
+    page = render_html(sim)
+    assert f"Überblick: {len(ov)} Ein-Jahres-Zeiträume" in page and "<rect" in page
+    assert "Höchstens investiert: 50%" in page

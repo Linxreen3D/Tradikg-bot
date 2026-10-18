@@ -337,6 +337,21 @@ def cmd_sim(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Abgebrochen: {exc}")
         return 1
+    if args.overview and args.mode == "trend":
+        from tradikg_bot.replay.simulate import rolling_overview
+
+        print("  … Überblick über alle Ein-Jahres-Zeiträume", flush=True)
+        sim.overview = rolling_overview(
+            replay,
+            args.overview_from,
+            invest_fraction=args.invest_fraction or cfg.invest_fraction,
+            cash_yield_pa=cfg.cash_yield_pa if args.cash_yield is None else args.cash_yield,
+        )
+        ov = sim.overview
+        print(
+            f"Überblick {len(ov)} Zeiträume: im Plus {(ov['bot'] > 0).mean():.0%} | Median "
+            f"{ov['bot'].median():+.1%} | schlechtestes Jahr {ov['bot'].min():+.1%}"
+        )
     print(f"\nSchnelldurchlauf {sim.start.date()} – {sim.end.date()} ({args.timeframe}):")
     for r in summary_rows(sim):
         print(
@@ -413,6 +428,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--invest-fraction", type=float, help="trend: max. investierter Anteil (0–1)")
     p.add_argument("--cash-yield", type=float, help="trend: Cash-Zins p.a., z. B. 0.02")
+    p.add_argument(
+        "--overview", action="store_true", help="trend: zusätzlich alle Ein-Jahres-Zeiträume"
+    )
+    p.add_argument("--overview-from", default="2019-01-01", help="erster Startmonat im Überblick")
     p.add_argument("--rules", choices=["kraken", "example"], default="kraken")
     p.set_defaults(func=cmd_sim, platform_cmd=True)
 

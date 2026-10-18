@@ -18,6 +18,7 @@ import html
 from collections import Counter
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 
 from tradikg_bot.replay.walkforward import (
@@ -41,6 +42,7 @@ class SimulationResult:
     buy_hold: ScenarioResult
     research: list[CutoffResearch] = field(default_factory=list)
     note: str = ""
+    overview: pd.DataFrame | None = None  # je Startmonat ein 1-Jahres-Zeitraum
 
 
 def _utc(x: str | pd.Timestamp) -> pd.Timestamp:
@@ -155,6 +157,104 @@ def simulate_trend(
     )
     return SimulationResult(
         idx[s], idx[e - 1], replay.cfg.timeframe, replay.data_source, bots, bh, [], note
+    )
+
+
+def rolling_overview(
+    replay: HistoricalReplay,
+    first: str | pd.Timestamp = "2019-01-01",
+    capital: float = 100.0,
+    invest_fraction: float = 1.0,
+    cash_yield_pa: float = 0.0,
+    horizon_days: int = 365,
+) -> pd.DataFrame:
+    """Bot an jedem Monatsanfang neu mit ``capital`` einsetzen und je 1 Jahr laufen lassen."""
+    from tradikg_bot.trading.allocation import TrendConfig, run_trend
+
+    cfg = TrendConfig(invest_fraction=invest_fraction, cash_yield_pa=cash_yield_pa)
+    rules, data, idx = replay.rules, replay.data, replay.plan.index
+    last_start = idx[-1] - pd.Timedelta(days=horizon_days)
+    rows = []
+    for a in pd.date_range(_utc(first), last_start, freq="MS"):
+        e = a + pd.Timedelta(days=horizon_days)
+        eq, trades, _, _ = run_trend(
+            data,
+            a,
+            e,
+            capital,
+            lambda sym, px: max(rules[sym].ordermin * px, rules[sym].costmin),
+            cfg,
+        )
+        months = eq.resample("ME").last().pct_change().dropna()
+        bh = [
+            float(df["close"].asof(e) / df["open"].asof(a)) * (1 - cfg.taker_fee) ** 2
+            for df in data.values()
+            if df.index[0] <= a
+        ]
+        rows.append(
+            {
+                "start": a,
+                "bot": float(eq.iloc[-1] / capital - 1),
+                "buy_hold": float(np.mean(bh) - 1) if bh else float("nan"),
+                "max_dd": float(max_drawdown(eq, capital)),
+                "worst_month": float(months.min()),
+                "months_plus": float((months > 1e-9).mean()),
+                "trades": len(trades),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _overview_html(ov: pd.DataFrame, capital: float) -> str:
+    if ov is None or ov.empty:
+        return ""
+    plus = (ov["bot"] > 0).mean()
+    w, h, pad = 900, 220, 30
+    lo, hi = min(ov["bot"].min(), 0), max(ov["bot"].max(), 0)
+    bw = (w - 2 * pad) / len(ov)
+
+    def y(v: float) -> float:
+        return pad + (hi - v) / max(hi - lo, 1e-9) * (h - 2 * pad)
+
+    bars = "".join(
+        f'<rect x="{pad + i * bw:.1f}" y="{min(y(v), y(0)):.1f}" width="{max(bw - 1, 1):.1f}" '
+        f'height="{abs(y(v) - y(0)):.1f}" class="{"win" if v > 0 else "loss"}"><title>'
+        f"Start {r.start.date()}: {_pct(v)} (Buy &amp; Hold {_pct(r.buy_hold)})</title></rect>"
+        for i, (v, r) in enumerate(zip(ov["bot"], ov.itertuples(), strict=True))
+    )
+    chart = (
+        f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="Ergebnis je Startmonat">'
+        f'<line x1="{pad}" x2="{w - pad}" y1="{y(0):.1f}" y2="{y(0):.1f}" class="base"/>{bars}'
+        f'<text x="{pad}" y="{h - 8}" class="axis">{ov["start"].iloc[0].date()}</text>'
+        f'<text x="{w - pad}" y="{h - 8}" class="axis" text-anchor="end">{ov["start"].iloc[-1].date()}</text></svg>'
+    )
+    worst = ov.loc[ov["bot"].idxmin()]
+    cards = [
+        ("Zeiträume im Plus", f"{plus:.0%} von {len(ov)}", "pos" if plus >= 0.7 else "neg"),
+        ("Typisches Jahr (Median)", _pct(ov["bot"].median()), ""),
+        ("Schlechtestes Jahr", f"{_pct(worst['bot'])} (Start {worst['start'].date()})", "neg"),
+        ("Bestes Jahr", _pct(ov["bot"].max()), "pos"),
+        (
+            "Ø größter Rückgang",
+            f"{_pct(ov['max_dd'].mean())} (schlimmster {_pct(ov['max_dd'].min())})",
+            "",
+        ),
+        ("Schlechtester Monat", _pct(ov["worst_month"].min()), ""),
+        ("Monate im Plus (Ø)", f"{ov['months_plus'].mean():.0%}", ""),
+        (
+            "Buy &amp; Hold im Plus",
+            f"{(ov['buy_hold'] > 0).mean():.0%} · schlechtestes Jahr {_pct(ov['buy_hold'].min())}",
+            "",
+        ),
+    ]
+    cards_html = "".join(
+        f"<div class='card'><div class='k'>{k}</div><div class='v {c}'>{v}</div></div>"
+        for k, v, c in cards
+    )
+    return (
+        f"<h2>Überblick: {len(ov)} Ein-Jahres-Zeiträume ({_eur(capital)} Start, jeden Monat neu)</h2>"
+        f"<div class='mut'>Jeder Balken ist ein Jahr Bot ab einem Monatsanfang – grün = Gewinn, rot = Verlust "
+        f"(Maus darüber zeigt Start und Ergebnis).</div><div class='cards'>{cards_html}</div>{chart}"
     )
 
 
@@ -300,7 +400,7 @@ h1{{font-size:22px;margin:0 0 4px}} h2{{font-size:17px;margin:28px 0 8px}} .mut,
 svg{{width:100%;height:auto;border:1px solid var(--line);border-radius:10px}}
 polyline{{fill:none;stroke-width:2}} .bot{{stroke:var(--bot)}} .bh{{stroke:var(--bh);stroke-dasharray:5 4}}
 .base{{stroke:var(--mut);stroke-dasharray:2 4}} .axis{{fill:var(--mut);font-size:12px}}
-circle.win{{fill:var(--pos)}} circle.loss{{fill:var(--neg)}}
+circle.win,rect.win{{fill:var(--pos)}} circle.loss,rect.loss{{fill:var(--neg)}}
 .tbl{{overflow-x:auto}} table{{border-collapse:collapse;width:100%;font-size:13px}}
 td,th{{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;white-space:nowrap}}
 .legend span{{margin-right:16px}} .note{{border-left:3px solid var(--mut);padding:4px 12px;color:var(--mut)}}
@@ -309,6 +409,8 @@ td,th{{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;white
 <div class="mut">Zeitraum {sim.start.date()} – {sim.end.date()} · Kerzen {html.escape(sim.timeframe)} ·
 Daten {html.escape(sim.data_source)} · virtuelles Geld, keine echten Orders</div>
 <div class="cards">{cards}</div>
+{_overview_html(sim.overview, main.capital)}
+<h2>Verlauf ab {sim.start.date()}</h2>
 <div class="legend"><span style="color:var(--bot)">━ Bot (100 €)</span>
 <span style="color:var(--bh)">┅ Buy &amp; Hold</span><span class="pos">● Gewinn-Trade</span>
 <span class="neg">● Verlust-Trade</span></div>
