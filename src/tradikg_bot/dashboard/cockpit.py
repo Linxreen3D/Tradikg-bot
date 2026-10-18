@@ -82,7 +82,13 @@ def _price_chart(sym: str, bars: pd.DataFrame, lines: list[tuple[str, float, str
                 scale=alt.Scale(domain=list(rules["label"]), range=list(rules["color"])),
                 legend=alt.Legend(title=None, orient="bottom"),
             ),
-            strokeDash=alt.StrokeDash("dash:N", legend=None),
+            strokeDash=alt.StrokeDash(
+                "dash:N",
+                scale=alt.Scale(
+                    domain=["solid", "dashed", "dotted"], range=[[1, 0], [8, 4], [2, 3]]
+                ),
+                legend=None,
+            ),
             tooltip=[
                 alt.Tooltip("label:N", title=""),
                 alt.Tooltip("y:Q", title="Preis", format=",.2f"),
@@ -204,24 +210,11 @@ def render(cfg: PlatformConfig) -> None:
     if len(eq) > 1:
         st.altair_chart(
             alt.Chart(eq)
-            .mark_area(
-                line={"color": BOT},
-                color=alt.Gradient(
-                    gradient="linear",
-                    stops=[
-                        alt.GradientStop(color="white", offset=0),
-                        alt.GradientStop(color=BOT, offset=1),
-                    ],
-                    x1=1,
-                    x2=1,
-                    y1=1,
-                    y2=0,
-                ),
-                opacity=0.3,
-            )
+            .mark_line(color=BOT, strokeWidth=2)
             .encode(
                 x=alt.X("ts:T", title=None),
-                y=alt.Y("equity:Q", title="EUR", scale=alt.Scale(zero=False)),
+                y=alt.Y("equity:Q", title="Guthaben EUR", scale=alt.Scale(zero=False)),
+                tooltip=[alt.Tooltip("ts:T", title="Zeit"), alt.Tooltip("equity:Q", format=",.2f")],
             ),
             use_container_width=True,
         )
