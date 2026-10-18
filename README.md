@@ -60,6 +60,7 @@ tradikg sim --start 2025-01-01 [--mode trend|signals]                   # Schnel
 tradikg paper run [--once] | replay --source cache | status | report [--day YYYY-MM-DD]
 tradikg paper kill [--release] | reset-halt --note "Prüfergebnis"
 tradikg kraken market-check | preflight | paper-trade | status   # Kraken-Pilot (Live gesperrt)
+tradikg live check | run | status | kill        # Echtgeld-Trendfolge, kleines Budget (docs/LIVE_START.md)
 tradikg sample-data | import-csv | fetch | backtest | runs        # Sprint-1-Backtesting
 ```
 

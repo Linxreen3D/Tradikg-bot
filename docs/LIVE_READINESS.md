@@ -28,6 +28,14 @@ gesperrt. In diesem Sprint wurden keine echten Orders gesendet.
    ATR-basierten Stops auf Stundenbasis fressen die Kosten in den Tests regelmäßig
    jeden Vorteil auf. Das ist kein Fehler, sondern ein realistisches Ergebnis.
 
+## Nachtrag 18.10.2026: Trendfolge-Echtbetrieb mit kleinem Budget
+
+Auf ausdrücklichen Wunsch des Nutzers gebaut: `tradikg live` (docs/LIVE_START.md). Die
+Trendfolge braucht **keinen SL+TP-Bracket**, nur einen einzelnen serverseitigen Stop-Loss – das
+bietet die Kraken-Spot-API. Budget hart ≤ 50 € (Standard 20 €), nur BTC/ETH Spot, eigene Mengen
+per `userref`, idempotent, Abbruch bei Auszahlungsrecht/Margin, Probelauf mit `validate=true`.
+Der bestehende Bracket-/Signal-Pfad bleibt **NOT LIVE READY**.
+
 ## Alternative Broker (nur Recherche, keine Konten angelegt)
 
 | Anbieter | API-Bracket für Spot | Quelle | Offene Punkte |

@@ -201,6 +201,28 @@ class KrakenSpotGateway:
     def submit_bracket(self, request: BracketRequest) -> str:
         raise BracketNotSupportedError(self.capabilities.evidence)
 
+    def add_order(self, params: dict[str, Any], validate: bool = False) -> str | None:
+        """Sendet eine einzelne Order (Spot, ohne Hebel). ``validate`` = Kraken prüft nur.
+
+        Rückgabe: txid (bzw. ``None`` bei reiner Validierung). Unklare Ergebnisse werden als
+        ``OutcomeUnknownError`` gemeldet – der Aufrufer prüft dann per ``userref`` nach.
+        """
+        data = {**params, **({"validate": "true"} if validate else {})}
+        try:
+            result = self.client.private("AddOrder", data)
+        except KrakenRejectedError as exc:
+            raise OrderRejectedError(str(exc)) from exc
+        except (KrakenUnknownOutcomeError, KrakenNotSentError) as exc:
+            raise OutcomeUnknownError(str(exc)) from exc
+        txids = result.get("txid") or []
+        return None if validate else txids[0]
+
+    def query_orders(self, txids: list[str]) -> dict[str, ExchangeOrder]:
+        if not txids:
+            return {}
+        result = self.client.private("QueryOrders", {"txid": ",".join(txids)})
+        return {t: parse_order(t, raw) for t, raw in result.items()}
+
     def cancel_order(self, txid: str) -> None:
         try:
             self.client.private("CancelOrder", {"txid": txid})

@@ -98,6 +98,8 @@ def load_credentials(
             f"(Dienst '{KEYCHAIN_SERVICE}')."
         )
     path = Path(file_path).expanduser().resolve()
+    if not path.is_file():
+        raise CredentialsError(f"Zugangsdatei {path} ({ENV_FILE}) existiert nicht")
     if _inside_git_worktree(path):
         raise CredentialsError(
             f"{path} liegt in einem Git-Arbeitsverzeichnis – Zugangsdaten nur außerhalb speichern."
