@@ -396,3 +396,19 @@ Gefundener Fehler: `TrendPaperEngine` übernahm die konfigurierte `TrendConfig` 
 100 %). Behoben, Test `test_trend_mode_uses_configured_invest_fraction`.
 
 Paper-Betrieb: `invest_fraction = 0.5`, 100 € virtuell, BTC/ETH, 1d (frischer Zustand ab 18.10.2026).
+
+## Grid-Daytrading (18.10.2026, auf Wunsch, nur Paper)
+
+Netz 3 % (5 Stufen je Coin, Maker-Limits), Notbremse −10 % (Taker), neue Käufe nur bei
+Tagesschluss über SMA 200. Einstellungen auf 2019–2022 gewählt (alle Varianten 1–3 % Abstand,
+mit/ohne Filter verloren dort 32–83 %). Schnelldurchlauf mit realistischer Füllung (kein Rückkauf
+derselben Stufe in derselben Stunde):
+
+| Start | Grid 100 € → | Trades | Max. DD | Buy & Hold |
+|---|---|---|---|---|
+| 17.10.2025 | 102,05 € (+2,1 %) | 91 | −8,5 % | 69,90 € |
+| 01.01.2023 | 84,45 € (−15,5 %) | 522 | −25,6 % | 324,41 € |
+
+Kein belegter Vorteil; die Trendfolge war im selben Zeitraum klar besser. Paper-Betrieb läuft seit
+18.10.2026 01:48 UTC im Grid-Modus (1h, 100 € virtuell). Vorheriger Trend-Zustand:
+`paper-trend50-20261018`. Echtgeld-Modul (`tradikg live`) bleibt Trendfolge, nicht gestartet.
