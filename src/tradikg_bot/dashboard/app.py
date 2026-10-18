@@ -211,6 +211,7 @@ def main() -> None:
 
 def _simulation_tab(cfg: PlatformConfig) -> None:
     """Neuer Testdurchlauf per Knopf: Schnelldurchlauf ab Datum + Überblick (ruft `tradikg sim`)."""
+    import datetime as dt
     import subprocess
     import sys
 
@@ -266,7 +267,7 @@ def _simulation_tab(cfg: PlatformConfig) -> None:
         "Testdurchläufe (neuester zuerst)",
         pages,
         format_func=lambda p: (
-            f"{pd.Timestamp(p.stat().st_mtime, unit='s'):%d.%m.%Y %H:%M} – Start {p.name[4:14]}"
+            f"{dt.datetime.fromtimestamp(p.stat().st_mtime):%d.%m.%Y %H:%M} – Start {p.name[4:14]}"
         ),
     )
     components.html(page.read_text(), height=2200, scrolling=True)
