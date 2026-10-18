@@ -117,6 +117,7 @@ class LiveTrendRunner:
         self.gw, self.cfg, self.closes, self.kill = gateway, cfg, closes, kill_switch
         self.state_path, self.dry_run, self.log = state_path, dry_run, log
         self.snapshot_path = snapshot_path
+        self._fresh = not state_path.exists()
         self.state = LiveState.load(state_path)
 
     # -- Kraken-Aufrufe ------------------------------------------------------------------------
@@ -178,12 +179,34 @@ class LiveTrendRunner:
         except OrderRejectedError as exc:  # z. B. schon ausgeführt – der nächste Abgleich zeigt es
             self.log(f"[STORNO] {txid} nicht möglich: {exc}")
 
+    def _refuse_if_state_lost(self) -> None:
+        """Ohne Zustandsdatei kennt der Bot seine Positionen nicht. Liegen bei Kraken noch offene
+        Orders mit Bot-Kennung (z. B. Stops), würde er sonst ein zweites Mal kaufen."""
+        if not self._fresh or self.dry_run:
+            return
+        n = len(self.cfg.symbols)
+        mine = [
+            o.txid
+            for o in self.gw.open_orders()
+            if o.client_ref
+            and o.client_ref >= 10**7
+            and o.client_ref % 10 in KIND.values()
+            and 1 <= o.client_ref // 10 % 10 <= n
+        ]
+        if mine:
+            raise LiveSafetyError(
+                f"Zustandsdatei {self.state_path} fehlt, aber bei Kraken sind Bot-Orders offen "
+                f"({', '.join(mine)}). Datei wiederherstellen oder diese Orders selbst prüfen."
+            )
+        self._fresh = False
+
     # -- ein Durchgang -------------------------------------------------------------------------
     def run_once(self) -> LiveState:
         if self.gw.has_withdrawal_permission():
             raise LiveSafetyError(
                 "API-Key hat Auszahlungsrechte – bitte Key ohne Auszahlung anlegen"
             )
+        self._refuse_if_state_lost()
         if self.gw.has_margin_positions():
             raise LiveSafetyError("Margin-Positionen vorhanden – der Bot handelt nur Spot")
         balances = self.gw.balances()
@@ -231,6 +254,7 @@ class LiveTrendRunner:
             raise LiveSafetyError(
                 "API-Key hat Auszahlungsrechte – bitte Key ohne Auszahlung anlegen"
             )
+        self._refuse_if_state_lost()
         balances = self.gw.balances()
         today = str(pd.Timestamp.now(tz="UTC").date())
         for sym in self.cfg.symbols:
