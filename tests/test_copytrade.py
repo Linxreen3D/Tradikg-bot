@@ -103,7 +103,8 @@ def test_fire_after_two_losses_then_next_trader():
             tr(s + 75, "X", "sell", 1, 0.5, pool=f"P{i + 2}", token=tok),
         ]
     rows += [tr(later + 9000, "X", "buy", 1, 1.0)]
-    res = simulate_copy(frame(rows), POOLS, CopyConfig(lookback_h=1, **NO_COST))
+    cfg = CopyConfig(lookback_h=1, followers=1, rerank_min=600, **NO_COST)  # Feuer-Regel isoliert
+    res = simulate_copy(frame(rows), POOLS, cfg)
     assert [f["wallet"] for f in res.followed][:2] == ["GOOD", "NEXT"]
     assert res.followed[0]["fired"] and any("[FIRED]" in e["text"] for e in res.feed)
 
@@ -171,3 +172,60 @@ def test_report_renders(tmp_path):
         [("Verzögerung 10 s", res.final)],
     )
     assert "Copy-Trading-Simulator" in page and "GOOD" in page and "<svg" in page
+
+
+def test_follows_several_traders_and_benches_inactive_ones():
+    later = 3600
+    rows = history() + [
+        tr(s, "NEXT", k, 100, p)
+        for s, k, p in (
+            (2000, "buy", 1.0),
+            (2060, "sell", 1.1),
+            (2400, "buy", 1.0),
+            (2460, "sell", 1.05),
+            (2800, "buy", 1.0),
+            (2860, "sell", 1.02),
+        )
+    ]
+    rows += [tr(later, "X", "buy", 1, 1.0)]  # Start: Rangliste
+    rows += [tr(later + 3 * 3600, "X", "buy", 1, 1.0)]  # später: niemand mehr aktiv
+    res = simulate_copy(frame(rows), POOLS, CopyConfig(lookback_h=1, **NO_COST))
+    assert {f["wallet"] for f in res.followed} == {"GOOD", "NEXT"}
+    assert any("[BANK]" in e["text"] for e in res.feed) and res.leaders == []
+
+
+def test_live_runner_writes_snapshot_from_fixed_start(tmp_path):
+    import json
+
+    from tradikg_bot.copytrade.live import run_live
+
+    store = CopyStore(tmp_path / "c.sqlite")
+    later = 3600
+    rows = history() + [
+        tr(later, "GOOD", "buy", 100, 1.0),
+        tr(later + 12, "X", "buy", 1, 1.1),
+        tr(later + 600, "X", "buy", 1, 1.3),
+    ]
+    store.save_trades(
+        [
+            (
+                r["tx_hash"],
+                r["pool"],
+                r["token"],
+                r["ts"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                r["wallet"],
+                r["kind"],
+                r["token_amount"],
+                r["price_usd"],
+                r["volume_usd"],
+            )
+            for r in rows
+        ]
+    )
+    store.conn.execute("INSERT INTO pools VALUES ('P1','TOK1','T','pumpswap',1e12,'','','')")
+    out = tmp_path / "live.json"
+    out.write_text(json.dumps({"start": (T0 + pd.Timedelta(seconds=later)).isoformat()}))
+    snap = run_live(tmp_path / "c.sqlite", out, CopyConfig(lookback_h=2, **NO_COST))
+    assert snap["leaders"] == ["GOOD"] and len(snap["open"]) == 1  # Position bleibt offen
+    assert snap["balance"] == pytest.approx(90 + 10 / 1.1 * 1.3)  # zum letzten Kurs bewertet
+    assert json.loads(out.read_text())["start"] == snap["start"]

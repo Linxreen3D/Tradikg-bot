@@ -37,14 +37,15 @@ class CopyConfig:
     dex_fee: float = 0.0025
     app_fee: float = 0.01
     network_usd: float = 0.01
-    price_window_s: float = (
-        600.0  # kein Preis innerhalb von 10 min nach Verzögerung → nicht kopieren
-    )
+    price_window_s: float = 600.0  # ohne Preis 10 min nach Verzögerung → nicht kopieren
+    followers: int = 3  # so viele Top-Trader gleichzeitig kopieren
+    rerank_min: float = 30.0  # Rangliste alle 30 min neu
+    active_min: float = 60.0  # nur Trader, die in der letzten Stunde gehandelt haben
 
 
-def load_trades(db: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_trades(db: str | Path, since: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     conn = sqlite3.connect(str(db))
-    trades = pd.read_sql_query("SELECT * FROM trades", conn)
+    trades = pd.read_sql_query("SELECT * FROM trades WHERE ts >= ?", conn, params=(since or "",))
     pools = pd.read_sql_query("SELECT * FROM pools", conn)
     conn.close()
     trades["ts"] = pd.to_datetime(trades["ts"], utc=True)
@@ -88,7 +89,8 @@ def wallet_stats(trades: pd.DataFrame) -> pd.DataFrame:
                 "roi": pnl / cost if cost else 0.0,
             }
         )
-    return pd.DataFrame(rows)
+    cols = ["wallet", "trades", "avg_usd", "rounds", "win_rate", "pnl_usd", "roi"]
+    return pd.DataFrame(rows, columns=cols)  # auch leer mit Spalten
 
 
 def rank_wallets(
@@ -127,6 +129,9 @@ class CopyResult:
     start: pd.Timestamp | None = None
     end: pd.Timestamp | None = None
     note: str = ""
+    open_positions: list[dict] = field(default_factory=list)
+    leaders: list[str] = field(default_factory=list)
+    losses: dict[str, int] = field(default_factory=dict)
 
     @property
     def final(self) -> float:
@@ -162,12 +167,18 @@ class _Prices:
 
 
 def simulate_copy(
-    trades: pd.DataFrame, pools: pd.DataFrame, cfg: CopyConfig | None = None
+    trades: pd.DataFrame,
+    pools: pd.DataFrame,
+    cfg: CopyConfig | None = None,
+    start: pd.Timestamp | None = None,
+    close_at_end: bool = True,
 ) -> CopyResult:
+    """``start``: Beginn des Kopierens (Standard: erster Trade + Rückblick). ``close_at_end``:
+    offene Positionen am Ende verkaufen (Rückblick) oder offen lassen (Live-Betrieb)."""
     cfg = cfg or CopyConfig()
     if trades.empty:
         raise ValueError("Keine Trades gesammelt – erst `tradikg copy collect` laufen lassen.")
-    start = trades["ts"].iloc[0] + pd.Timedelta(hours=cfg.lookback_h)
+    start = start or trades["ts"].iloc[0] + pd.Timedelta(hours=cfg.lookback_h)
     end = trades["ts"].iloc[-1]
     if start >= end:
         hours = (end - trades["ts"].iloc[0]).total_seconds() / 3600
@@ -179,25 +190,31 @@ def simulate_copy(
     cash, positions = cfg.capital, {}
     res = CopyResult(cfg, pd.Series(dtype=float), start=start, end=end)
     fired: set[str] = set()
-    losses = 0
-    leader: str | None = None
+    losses: dict[str, int] = {}
+    leaders: list[str] = []
+    info: dict[str, dict] = {}  # Wallet -> Eintrag in res.followed (aktueller Abschnitt)
     curve: dict[pd.Timestamp, float] = {start: cash}
 
     def cost_factor(usd: float, pool: str) -> float:
         impact = usd / max(reserve.get(pool, 0.0) / 2, 1.0)
         return min(impact, 0.5) + cfg.dex_fee + cfg.app_fee
 
-    def pick(ts: pd.Timestamp) -> str | None:
+    def rerank(ts: pd.Timestamp) -> None:
         window = trades[
             (trades["ts"] >= ts - pd.Timedelta(hours=cfg.lookback_h)) & (trades["ts"] < ts)
         ]
+        active = set(
+            window.loc[window["ts"] >= ts - pd.Timedelta(minutes=cfg.active_min), "wallet"]
+        )
         ranked = rank_wallets(window, cfg, fired)
-        if ranked.empty:
-            return None
-        top = ranked.iloc[0]
-        res.followed.append(
-            {
-                "wallet": top["wallet"],
+        ranked = ranked[ranked["wallet"].isin(active)].head(cfg.followers)
+        new = list(ranked["wallet"])
+        for _, top in ranked.iterrows():
+            w = str(top["wallet"])
+            if w in leaders:
+                continue
+            info[w] = {
+                "wallet": w,
                 "since": ts,
                 "roi": top["roi"],
                 "win_rate": top["win_rate"],
@@ -205,20 +222,31 @@ def simulate_copy(
                 "pnl_usd": 0.0,
                 "copied": 0,
                 "fired": False,
+                "until": None,
             }
-        )
-        res.feed.append(
-            {
-                "ts": ts,
-                "text": f"Folge jetzt {top['wallet'][:6]}… (ROI {top['roi']:+.0%}, "
-                f"{top['win_rate']:.0%} Treffer, {int(top['rounds'])} Runden)",
-                "pnl": None,
-            }
-        )
-        return str(top["wallet"])
+            res.followed.append(info[w])
+            res.feed.append(
+                {
+                    "ts": ts,
+                    "text": f"[FOLGE] {w[:6]}… (ROI {top['roi']:+.0%}, "
+                    f"{top['win_rate']:.0%} Treffer, {int(top['rounds'])} Runden)",
+                    "pnl": None,
+                }
+            )
+        for w in leaders:
+            if w not in new and w in info:
+                info[w]["until"] = ts
+                res.feed.append(
+                    {
+                        "ts": ts,
+                        "text": f"[BANK] {w[:6]}… nicht mehr unter den Top {cfg.followers}",
+                        "pnl": None,
+                    }
+                )
+        leaders[:] = new
 
     def close(pos: Position, ts: pd.Timestamp, why: str) -> None:
-        nonlocal cash, losses, leader
+        nonlocal cash
         quote = prices.after(pos.pool, ts + pd.Timedelta(seconds=cfg.delay_s), cfg.price_window_s)
         px = quote[0] if quote else prices.last_before(pos.pool, ts) or 0.0
         gross = pos.units * px
@@ -238,59 +266,68 @@ def simulate_copy(
                 "reason": why,
             }
         )
-        res.feed.append({"ts": ts, "text": f"[EXIT] {pos.token[:6]}… ({why})", "pnl": pnl})
-        for f in res.followed:
-            if f["wallet"] == pos.wallet:
-                f["pnl_usd"] += pnl
-        if pos.wallet != leader:  # Positionen früherer Trader zählen nicht für die Feuer-Regel
+        res.feed.append(
+            {"ts": ts, "text": f"[EXIT] {pos.wallet[:6]}… {pos.token[:6]}… ({why})", "pnl": pnl}
+        )
+        if pos.wallet in info:
+            info[pos.wallet]["pnl_usd"] += pnl
+        if pos.wallet not in leaders:  # nur aktuell Gefolgte können gefeuert werden
             return
-        losses = losses + 1 if pnl < 0 else 0
-        if losses >= cfg.fire_after:
-            fired.add(leader)
-            res.followed[-1]["fired"] = True
+        losses[pos.wallet] = losses.get(pos.wallet, 0) + 1 if pnl < 0 else 0
+        if losses[pos.wallet] >= cfg.fire_after:
+            fired.add(pos.wallet)
+            leaders.remove(pos.wallet)
+            info[pos.wallet]["fired"], info[pos.wallet]["until"] = True, ts
             res.feed.append(
                 {
                     "ts": ts,
-                    "text": f"[FIRED] {leader[:6]}… nach {losses} Verlusten in Folge",
+                    "text": f"[FIRED] {pos.wallet[:6]}… nach "
+                    f"{losses[pos.wallet]} Verlusten in Folge",
                     "pnl": None,
                 }
             )
-            losses = 0
-            leader = None
 
     events = trades[trades["ts"] >= start]
-    last_check = start - pd.Timedelta(minutes=5)  # erste Auswahl sofort beim Start
+    next_rank = start
     for row in events.itertuples(index=False):
         ts = row.ts
         for pos in [
             p for p in positions.values() if ts - p.entry_ts > pd.Timedelta(hours=cfg.max_hold_h)
         ]:
             close(pos, pos.entry_ts + pd.Timedelta(hours=cfg.max_hold_h), "max. Haltedauer")
-        if leader is None and ts - last_check >= pd.Timedelta(minutes=5):
-            last_check = ts
-            leader = pick(ts)
-        if leader is None or row.wallet != leader:
-            continue
-        if row.kind == "buy" and row.token not in positions and len(positions) < cfg.max_positions:
+        if ts >= next_rank or (
+            len(leaders) < cfg.followers
+            and ts >= next_rank - pd.Timedelta(minutes=cfg.rerank_min) + pd.Timedelta(minutes=5)
+        ):
+            rerank(ts)
+            next_rank = ts + pd.Timedelta(minutes=cfg.rerank_min)
+        if (
+            row.wallet in leaders
+            and row.kind == "buy"
+            and row.token not in positions
+            and len(positions) < cfg.max_positions
+        ):
             quote = prices.after(
                 row.pool, ts + pd.Timedelta(seconds=cfg.delay_s), cfg.price_window_s
             )
             usd = cash * cfg.position_frac
-            if quote is None or usd < 1.0:
-                continue
-            px, fill_ts = quote
-            spend = usd - cfg.network_usd
-            units = spend * (1 - cost_factor(spend, row.pool)) / px
-            cash -= usd
-            positions[row.token] = Position(row.token, row.pool, units, usd, fill_ts, leader)
-            res.followed[-1]["copied"] += 1
-            res.feed.append(
-                {
-                    "ts": fill_ts,
-                    "text": f"[COPY] {leader[:6]}… kaufte {row.token[:6]}… · wir {usd:.2f} $",
-                    "pnl": None,
-                }
-            )
+            if quote is not None and usd >= 1.0:
+                px, fill_ts = quote
+                spend = usd - cfg.network_usd
+                units = spend * (1 - cost_factor(spend, row.pool)) / px
+                cash -= usd
+                positions[row.token] = Position(
+                    row.token, row.pool, units, usd, fill_ts, row.wallet
+                )
+                info[row.wallet]["copied"] += 1
+                res.feed.append(
+                    {
+                        "ts": fill_ts,
+                        "text": f"[COPY] {row.wallet[:6]}… kaufte "
+                        f"{row.token[:6]}… · wir {usd:.2f} $",
+                        "pnl": None,
+                    }
+                )
         elif (
             row.kind == "sell"
             and row.token in positions
@@ -299,9 +336,22 @@ def simulate_copy(
             close(positions[row.token], ts, "Trader verkauft")
         held = sum(p.units * (prices.last_before(p.pool, ts) or 0.0) for p in positions.values())
         curve[ts] = cash + held
-    for pos in list(positions.values()):  # am Ende zum letzten Preis abzüglich Kosten bewerten
-        close(pos, end, "Ende der Daten")
-    curve[end] = cash
+    if close_at_end:
+        for pos in list(positions.values()):
+            close(pos, end, "Ende der Daten")
+        curve[end] = cash
+    res.open_positions = [
+        {
+            "wallet": p.wallet,
+            "token": p.token,
+            "since": p.entry_ts,
+            "cost_usd": p.cost_usd,
+            "value_usd": p.units * (prices.last_before(p.pool, end) or 0.0),
+        }
+        for p in positions.values()
+    ]
+    res.leaders = list(leaders)
+    res.losses = {w: losses.get(w, 0) for w in leaders}
     res.equity = pd.Series(curve).sort_index()
     return res
 

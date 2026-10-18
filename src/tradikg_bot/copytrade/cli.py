@@ -36,6 +36,15 @@ def cmd_collect(args: argparse.Namespace) -> int:
             started = time.time()
             try:
                 collect_once(store)
+                if not args.no_live:
+                    from tradikg_bot.copytrade.live import run_live
+
+                    snap = run_live(db, cfg.data_dir / "copy_live.json")
+                    print(
+                        f"Live-Copy: {snap['balance']:.2f} $ ({snap['pnl']:+.2f} $), "
+                        f"{snap['trades']} Trades, folge {len(snap['leaders'])}",
+                        flush=True,
+                    )
             except Exception as exc:  # Netz/API – nächster Durchgang
                 print(f"Fehler: {exc}", flush=True)
             stop.wait(max(5.0, args.interval - (time.time() - started)))
@@ -107,6 +116,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--platform-config")
     p.add_argument("--once", action="store_true")
     p.add_argument("--interval", type=float, default=150.0, help="Sekunden je Durchgang")
+    p.add_argument("--no-live", action="store_true", help="ohne virtuellen Live-Copy-Bot")
     p.set_defaults(func=cmd_collect, platform_cmd=True)
     p = cs.add_parser("simulate", help="Kopieren der besten Wallets nachrechnen (virtuell)")
     p.add_argument("--platform-config")
