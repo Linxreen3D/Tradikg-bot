@@ -179,6 +179,8 @@ class DrawdownGuard:
     peak_equity: float = 0.0
     halted: bool = False
     rebase: bool = False
+    # Einmal-Marke von ``tradikg live drawdown-reset``. Gleicher Wert löst nicht noch einmal.
+    reset_id: int = 0
     peak_at: str | None = None
     halted_at: str | None = None
 
@@ -230,6 +232,7 @@ class DrawdownGuard:
             "peak_equity": self.peak_equity,
             "halted": self.halted,
             "rebase": self.rebase,
+            "reset_id": self.reset_id,
             "peak_at": self.peak_at,
             "halted_at": self.halted_at,
         }
@@ -242,6 +245,10 @@ class DrawdownGuard:
         guard.peak_equity = float(data.get("peak_equity") or 0.0)
         guard.halted = bool(data.get("halted"))
         guard.rebase = bool(data.get("rebase"))
+        try:
+            guard.reset_id = int(data.get("reset_id") or 0)
+        except (TypeError, ValueError):
+            guard.reset_id = 0
         guard.peak_at = data.get("peak_at")
         guard.halted_at = data.get("halted_at")
         return guard

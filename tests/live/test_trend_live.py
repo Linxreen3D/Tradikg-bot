@@ -857,8 +857,125 @@ def test_drawdown_manual_reset_by_deleting_the_file_and_by_cli(tmp_path, monkeyp
     raw = json.loads(state_path.read_text())
     assert raw["drawdown"]["halted"] is False
     assert raw["drawdown"]["rebase"] is True
+    assert raw["drawdown"]["reset_id"] == 1
     assert raw["drawdown"]["peak_equity"] == pytest.approx(40.0)
     assert "symbols" in raw
+
+
+def test_buy_now_trip_on_first_coin_blocks_the_second(tmp_path):
+    """Halt auf BTC darf ETH nicht freigeben, auch wenn die Datei noch halted:false hat."""
+    fake, market, run, _clock, logs = _btc_with_drawdown(tmp_path)
+    assert run.drawdown is not None
+    peak = run.drawdown.peak_equity
+    on_disk = json.loads((tmp_path / "state.json").read_text())["drawdown"]
+    assert on_disk["halted"] is False
+    market.day(110, 14)  # ETH über dem Schnitt, würde ohne Sperre sofort kaufen
+    _price_for_drawdown(fake, run, 0.50)
+    run.buy_now()
+    assert run.drawdown.halted
+    assert run.drawdown.peak_equity == pytest.approx(peak)
+    assert not any("drawdown-reset gelöst" in line for line in logs)
+    assert any("ETHEUR: keine neuen Käufe" in line for line in logs)
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+    saved = json.loads((tmp_path / "state.json").read_text())["drawdown"]
+    assert saved["halted"] is True
+    assert saved["peak_equity"] == pytest.approx(peak)
+
+
+def test_dry_run_keeps_drawdown_halt_across_cycles(tmp_path):
+    fake, market, run, clock, logs = _btc_with_drawdown(tmp_path)
+    assert run.drawdown is not None
+    peak = run.drawdown.peak_equity
+    market.day(110, 14)
+    dry = runner(
+        tmp_path,
+        fake,
+        market,
+        dry_run=True,
+        cfg=_dd_cfg(),
+        now=lambda: clock["t"],
+        log=logs.append,
+    )
+    assert dry.drawdown is not None and not dry.drawdown.halted
+    _price_for_drawdown(fake, dry, 0.50)
+    before = len(fake.validated)
+    dry.run_once()
+    assert dry.drawdown.halted
+    assert dry.drawdown.peak_equity == pytest.approx(peak)
+    raw = json.loads((tmp_path / "state.json").read_text())
+    assert raw["drawdown"]["halted"] is True
+    assert "XBTEUR" in raw["symbols"]
+    dry.run_once()
+    assert dry.drawdown.halted
+    assert dry.drawdown.peak_equity == pytest.approx(peak)
+    eth_buys = [
+        p for p in fake.validated[before:] if p.get("pair") == "ETHEUR" and p.get("type") == "buy"
+    ]
+    assert not eth_buys
+    again = runner(
+        tmp_path,
+        fake,
+        market,
+        dry_run=True,
+        cfg=_dd_cfg(),
+        now=lambda: clock["t"],
+        log=logs.append,
+    )
+    assert again.drawdown is not None and again.drawdown.halted
+    assert again.drawdown.peak_equity == pytest.approx(peak)
+
+
+def test_drawdown_reset_marker_releases_exactly_once(tmp_path):
+    from tradikg_bot.live.trend_live import release_drawdown_halt
+
+    fake, market, run, _clock, logs = _btc_with_drawdown(tmp_path)
+    assert run.drawdown is not None
+    peak = run.drawdown.peak_equity
+    _price_for_drawdown(fake, run, 0.50)
+    run.run_once()
+    assert run.drawdown.halted
+    assert run.drawdown.peak_equity == pytest.approx(peak)
+
+    release_drawdown_halt(tmp_path / "state.json")
+    raw = json.loads((tmp_path / "state.json").read_text())
+    assert raw["drawdown"]["reset_id"] == 1
+    assert raw["drawdown"]["halted"] is False
+    run.run_once()
+    assert not run.drawdown.halted
+    assert run.drawdown.reset_id == 1
+    rebased = run.drawdown.peak_equity
+    assert rebased < peak * 0.6
+    assert sum("drawdown-reset gelöst" in line for line in logs) == 1
+
+    # Dieselbe Marke setzt den Höchststand nicht noch einmal, auch nach einem neuen Riss.
+    fake.price["XBTEUR"] = 100.0
+    run.run_once()
+    assert not run.drawdown.halted
+    climbed = run.drawdown.peak_equity
+    assert climbed > rebased + 5
+    _price_for_drawdown(fake, run, 0.50)
+    run.run_once()
+    assert run.drawdown.halted
+    held = run.drawdown.peak_equity
+    assert held == pytest.approx(climbed)
+    disk = json.loads((tmp_path / "state.json").read_text())
+    disk["drawdown"]["halted"] = False
+    disk["drawdown"]["rebase"] = True
+    (tmp_path / "state.json").write_text(json.dumps(disk))
+    market.day(110, 14)
+    run.run_once()
+    assert run.drawdown.halted
+    assert run.drawdown.peak_equity == pytest.approx(held)
+    assert run.drawdown.reset_id == 1
+    assert sum("drawdown-reset gelöst" in line for line in logs) == 1
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+
+    release_drawdown_halt(tmp_path / "state.json")
+    assert json.loads((tmp_path / "state.json").read_text())["drawdown"]["reset_id"] == 2
+    run.run_once()
+    assert not run.drawdown.halted
+    assert run.drawdown.reset_id == 2
+    assert sum("drawdown-reset gelöst" in line for line in logs) == 2
 
 
 def test_drawdown_uses_bot_slice_not_the_whole_account(tmp_path):

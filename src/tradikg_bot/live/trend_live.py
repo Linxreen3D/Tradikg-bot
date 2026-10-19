@@ -31,8 +31,9 @@ Sicherheit:
   Höchststand. Standard 45 % darunter, nur enger. Sie sperrt neue Käufe, bis
   jemand ``tradikg live drawdown-reset`` ausführt. ``DRAWDOWN_HALT`` ist nur ein
   Hinweis; Löschen löst die Sperre nicht. Keine Zwangsverkäufe, Stops bleiben.
-* ``dry_run``: Kraken prüft jede Order nur (``validate=true``), nichts wird ausgeführt oder
-  gespeichert.
+* ``dry_run``: Kraken prüft jede Order nur (``validate=true``), nichts wird ausgeführt.
+  Orders und Kerzen werden nicht gespeichert. Eine ausgelöste Drawdown-Sperre schon,
+  sofort, damit sie den nächsten Coin und den nächsten Durchgang sperrt.
 """
 
 from __future__ import annotations
@@ -168,9 +169,10 @@ class LiveState:
 def release_drawdown_halt(state_path: Path) -> None:
     """Löst die Drawdown-Sperre von Hand. Die Kill-Switch-Datei bleibt unberührt.
 
-    Schreibt die Lösung in die Zustandsdatei. ``DRAWDOWN_HALT`` wird nur als Hinweis
-    entfernt; die Datei allein zu löschen lässt die Sperre bestehen. Der nächste
-    Durchgang setzt den Höchststand auf die dann gesehene Equity.
+    Schreibt eine neue ``reset_id`` in die Zustandsdatei. Ein laufender Prozess löst
+    nur, wenn diese Marke höher ist als die gemerkte. ``DRAWDOWN_HALT`` wird nur als
+    Hinweis entfernt; die Datei allein zu löschen lässt die Sperre bestehen. Der
+    nächste Durchgang setzt den Höchststand auf die dann gesehene Equity.
     """
     flag = state_path.parent / DRAWDOWN_HALT_NAME
     flag.unlink(missing_ok=True)
@@ -179,11 +181,18 @@ def release_drawdown_halt(state_path: Path) -> None:
     state = LiveState.load(state_path)
     if state.drawdown is None:
         return
+    try:
+        seen = int(state.drawdown.get("reset_id") or 0)
+    except (TypeError, ValueError):
+        seen = 0
+    # ``reset_id`` ist der einzige Schalter für einen laufenden Prozess. ``halted: false``
+    # auf der Platte reicht nicht: der Guard läuft je Coin, bevor der neue Stand liegt.
     state.drawdown = {
         **state.drawdown,
         "halted": False,
         "halted_at": None,
         "rebase": True,
+        "reset_id": seen + 1,
     }
     state.save(state_path)
 
@@ -216,7 +225,7 @@ class LiveTrendRunner:
                 limit=cfg.daily_loss_fraction,
                 timezone=cfg.daily_loss_timezone,
             )
-        # Eigene Datei, nicht der Kill-Switch. Löschen löst die Sperre.
+        # Hinweisdatei, nicht der Kill-Switch. Löschen hebt die Sperre nicht auf.
         self.drawdown_file = state_path.parent / DRAWDOWN_HALT_NAME
         self.drawdown: DrawdownGuard | None = None
         if cfg.drawdown_enabled:
@@ -425,22 +434,68 @@ class LiveTrendRunner:
             return True
         return self._daily_loss_blocks(sym) or self._drawdown_blocks(sym)
 
+    def _saved_drawdown(self) -> dict[str, Any] | None:
+        if not self.state_path.exists():
+            return None
+        try:
+            saved = json.loads(self.state_path.read_text()).get("drawdown")
+        except (OSError, json.JSONDecodeError, TypeError):
+            return None
+        return saved if isinstance(saved, dict) else None
+
     def _apply_saved_drawdown_reset(self) -> None:
-        """CLI-Lösung steht in der Zustandsdatei. Eine fehlende Hinweisdatei zählt nicht."""
-        if self.drawdown is None or not self.drawdown.halted or not self.state_path.exists():
+        """Nur eine neue ``reset_id`` löst. ``halted: false`` auf der Platte zählt nicht."""
+        if self.drawdown is None:
+            return
+        saved = self._saved_drawdown()
+        if saved is None:
             return
         try:
-            saved = json.loads(self.state_path.read_text()).get("drawdown") or {}
-        except (OSError, json.JSONDecodeError, TypeError):
+            saved_id = int(saved.get("reset_id") or 0)
+        except (TypeError, ValueError):
             return
-        if not (saved.get("rebase") or saved.get("halted") is False):
+        if saved_id <= self.drawdown.reset_id:
             return
+        self.drawdown.reset_id = saved_id
         self.drawdown.reset()
         self.log(
             "[DRAWDOWN] Sperre per tradikg live drawdown-reset gelöst. "
             "Der Höchststand wird auf die jetzige Equity gesetzt. "
             "Verkäufe und Kraken-Stops waren die ganze Zeit aktiv."
         )
+
+    def _persist_drawdown_halt(self) -> None:
+        """Sperre sofort auf die Platte, auch im Probelauf, vor dem nächsten Coin.
+
+        Im Probelauf wird nur der Drawdown-Block gemerged. Orders und Kerzen bleiben
+        ungespeichert. Eine neuere ``reset_id`` auf der Platte wird nicht überschrieben.
+        """
+        if self.drawdown is None:
+            return
+        saved = self._saved_drawdown()
+        if saved is not None:
+            try:
+                if int(saved.get("reset_id") or 0) > self.drawdown.reset_id:
+                    return
+            except (TypeError, ValueError):
+                pass
+        self.state.drawdown = self.drawdown.snapshot()
+        if not self.dry_run:
+            self.state.save(self.state_path)
+            return
+        raw: dict[str, Any] = {}
+        if self.state_path.exists():
+            try:
+                loaded = json.loads(self.state_path.read_text())
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except (OSError, json.JSONDecodeError):
+                raw = {}
+        raw["drawdown"] = self.state.drawdown
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(raw, indent=2))
+        tmp.replace(self.state_path)
 
     def _poll_drawdown(self) -> None:
         """Höchststand nachziehen. Lösen nur per ``tradikg live drawdown-reset``."""
@@ -453,6 +508,7 @@ class LiveTrendRunner:
         breached = self.drawdown.observe(equity, self._now())
         self.state.drawdown = self.drawdown.snapshot()
         if breached:
+            self._persist_drawdown_halt()
             if not self.dry_run:
                 self._write_drawdown_file(equity)
             dd = abs(self.drawdown.drawdown_from(equity))
