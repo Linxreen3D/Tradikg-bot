@@ -15,11 +15,16 @@ Wants=network-online.target
 Type=simple
 Restart=on-failure
 RestartSec=30
+# Exit 2 ist Schutz (Abgleich, Auszahlung, Kill der Schleife). Nicht neu starten.
+RestartPreventExitStatus=2
 Environment=TRADIKG_HOME=%h/.tradikg
+Environment=TRADIKG_REPO=@REPO@
 # Geheimnisse nur hier, außerhalb des Repos, chmod 600. Nicht committen, nicht loggen.
 EnvironmentFile=%h/.config/tradikg/live.env
 WorkingDirectory=@REPO@
-ExecStart=@REPO@/.venv/bin/tradikg live run --budget 20 --invest-fraction 1.0 --daily-loss --daily-loss-fraction 0.05 --drawdown-kill-fraction 0.45 --require-dry-run --i-understand-this-uses-real-money
+# Die Schleife startet den Bot mit Budget 20, Tagesverlust 5 %, Drawdown 0.45
+# und --require-dry-run. Vor jedem Start, auch nach einem Absturz, restart-check.
+ExecStart=%h/.local/bin/tradikg_run_live_loop.sh
 
 [Install]
 WantedBy=default.target

@@ -9,13 +9,14 @@ Bestände auf dem gemeinsamen Kraken-Konto bleiben außen vor.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
 import math
 import os
+import subprocess
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from tradikg_bot.live.models import ExchangeOrder
 from tradikg_bot.live.trend_live import (
@@ -361,22 +362,48 @@ def reconcile(
     return "\n".join(lines), ok
 
 
-def _sha256(path: Path) -> str | None:
-    if not path.exists():
+def resolve_code_commit() -> str | None:
+    """Git-HEAD des Repos. None, wenn er sich nicht lesen lässt. Kein Log, kein stderr."""
+    root: Path | None = None
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").is_file() and (parent / ".git").exists():
+            root = parent
+            break
+    if root is None:
         return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    sha = out.stdout.strip()
+    if not sha or any(char in sha for char in "\n\r\t "):
+        return None
+    return sha
 
 
 def write_dry_run_marker(
     path: Path,
     *,
     budget_eur: float,
-    state_path: Path,
     daily_loss_enabled: bool,
     daily_loss_fraction: float,
     drawdown_enabled: bool = False,
     drawdown_fraction: float = 0.45,
+    code_commit: str | None = None,
 ) -> None:
+    """Stempel an Budget, Tagesgrenze, Drawdown und Code-Stand. Nicht an die Zustandsdatei."""
+    commit = resolve_code_commit() if code_commit is None else code_commit
+    if not commit:
+        raise LiveSafetyError("Code-Stand nicht ermittelbar. Probelauf wiederholen.")
     payload = {
         "ok": True,
         "budget_eur": budget_eur,
@@ -384,7 +411,7 @@ def write_dry_run_marker(
         "daily_loss_fraction": daily_loss_fraction,
         "drawdown_enabled": drawdown_enabled,
         "drawdown_fraction": drawdown_fraction,
-        "state_sha256": _sha256(state_path),
+        "code_commit": commit,
         "at": dt.datetime.now(dt.UTC).isoformat(),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -397,13 +424,17 @@ def marker_block_reason(
     path: Path,
     *,
     budget_eur: float,
-    state_path: Path,
     daily_loss_enabled: bool,
     daily_loss_fraction: float,
     drawdown_enabled: bool = False,
     drawdown_fraction: float = 0.45,
+    code_commit: str | None = None,
 ) -> str | None:
-    """None, wenn ein passender Probelauf vorliegt."""
+    """None, wenn ein passender Probelauf vorliegt.
+
+    Der Stempel hängt an der Konfiguration und am Commit, nicht an
+    ``trend_state.json``. Die Datei ändert sich, sobald der Bot läuft.
+    """
     if not path.exists():
         return "Kein Probelauf-Stempel. Zuerst `tradikg live dry-run` ausführen."
     try:
@@ -424,9 +455,183 @@ def marker_block_reason(
     recorded_dd = float(data.get("drawdown_fraction", -1))
     if abs(recorded_dd - float(drawdown_fraction)) > 1e-12:
         return "Probelauf hatte eine andere Drawdown-Schwelle."
-    if data.get("state_sha256") != _sha256(state_path):
-        return "Zustand wurde seit dem Probelauf geändert. Probelauf wiederholen."
+    commit = resolve_code_commit() if code_commit is None else code_commit
+    if not commit:
+        return "Code-Stand nicht ermittelbar. Probelauf wiederholen."
+    if str(data.get("code_commit") or "") != commit:
+        return "Probelauf hatte einen anderen Code-Stand. Probelauf wiederholen."
     return None
+
+
+def _refuse_restart(text: str) -> NoReturn:
+    raise LiveSafetyError(f"Neustart verweigert: {text} Kein Neustart.")
+
+
+def _trading_enabled(gateway: Any) -> bool:
+    client = getattr(gateway, "client", None)
+    return bool(client is not None and getattr(client, "allow_trading", False))
+
+
+def _watched_bytes(paths: dict[str, Path]) -> dict[str, bytes | None]:
+    """Zustand, Stempel und Kill-Datei. Die Sperrdatei darf der Abgleich anfassen."""
+    found: dict[str, bytes | None] = {}
+    for key in ("state", "dry_run_ok", "kill"):
+        path = paths[key]
+        found[key] = path.read_bytes() if path.exists() else None
+    return found
+
+
+def missing_stop_reasons(
+    state: LiveState, orders: list[ExchangeOrder], cfg: LiveTrendConfig
+) -> list[str]:
+    """Positionen ohne börsenseitigen Stop und ohne offenen Bot-Verkauf."""
+    stops: dict[str, int] = {}
+    sells: dict[str, int] = {}
+    for order in orders:
+        if order.status.is_final:
+            continue
+        leg = bot_leg(order.client_ref, cfg.symbols)
+        if leg is None:
+            continue
+        sym, kind = leg
+        if kind == "stop":
+            stops[sym] = stops.get(sym, 0) + 1
+        elif kind in _SELL_KINDS:
+            sells[sym] = sells.get(sym, 0) + 1
+    reasons: list[str] = []
+    for sym in cfg.symbols:
+        st = state.symbols.get(sym, SymbolState())
+        if st.units <= 0 or stops.get(sym) or sells.get(sym):
+            continue
+        reasons.append(f"Stop an der Börse fehlt für {sym} (Menge {st.units:.8f})")
+    return reasons
+
+
+def assess_restart(
+    *,
+    gateway: Any,
+    paths: dict[str, Path],
+    cfg: LiveTrendConfig,
+    now: dt.datetime,
+    code_commit: str | None = None,
+) -> str:
+    """Liest nur. Prüft Stempel, zweite Instanz, Stops und den Abgleich. Schreibt nichts."""
+    before = _watched_bytes(paths)
+    block = marker_block_reason(
+        paths["dry_run_ok"],
+        budget_eur=cfg.budget_eur,
+        daily_loss_enabled=cfg.daily_loss_enabled,
+        daily_loss_fraction=cfg.daily_loss_fraction,
+        drawdown_enabled=cfg.drawdown_enabled,
+        drawdown_fraction=cfg.drawdown_fraction,
+        code_commit=code_commit,
+    )
+    if block:
+        _refuse_restart(block)
+    if gateway.has_withdrawal_permission():
+        _refuse_restart("API-Key hat Auszahlungsrechte – bitte Key ohne Auszahlung anlegen")
+    try:
+        orders = _open_orders(gateway)
+    except LiveSafetyError as exc:
+        _refuse_restart(str(exc))
+    reasons = peer_reasons(paths["pid"], orders, cfg.symbols, now)
+    if reasons:
+        _refuse_restart("eine andere Instanz könnte laufen:\n- " + "\n- ".join(reasons))
+    try:
+        lock = InstanceLock(paths["lock"]).acquire()
+    except AlreadyRunningError:
+        _refuse_restart("eine andere Instanz könnte laufen: die lokale Sperrdatei ist gehalten")
+    try:
+        if not paths["state"].exists():
+            _refuse_restart("keine Zustandsdatei")
+        try:
+            validate_state_file(paths["state"], cfg)
+        except LiveSafetyError as exc:
+            _refuse_restart(str(exc))
+        state = LiveState.load(paths["state"])
+        naked = missing_stop_reasons(state, orders, cfg)
+        if naked:
+            _refuse_restart("; ".join(naked))
+        report, ok = reconcile(state, orders, cfg)
+        if not ok:
+            _refuse_restart("Abgleich von Zustand und offenen Orders weicht ab.\n" + report)
+    finally:
+        lock.release()
+    if _watched_bytes(paths) != before:
+        _refuse_restart("Abgleich hat Zustand, Stempel oder Kill-Datei verändert")
+    return report
+
+
+def _validate_only_cycle(
+    gateway: Any,
+    paths: dict[str, Path],
+    cfg: LiveTrendConfig,
+    closes: Callable,
+    log: Callable[[str], None],
+    now: Callable[[], dt.datetime],
+) -> None:
+    """Ein Durchgang auf einer Kopie. AddOrder nur mit validate=true. Original bleibt."""
+    before = _watched_bytes(paths)
+    source = paths["state"]
+    with tempfile.TemporaryDirectory(prefix="tradikg-restart-") as tmp:
+        copy = Path(tmp) / "trend_state.json"
+        copy.write_bytes(source.read_bytes())
+        runner = LiveTrendRunner(
+            _ValidateOnly(gateway),
+            copy,
+            cfg,
+            closes,
+            paths["kill"],
+            dry_run=True,
+            log=log,
+            now=now,
+        )
+        try:
+            runner.run_once()
+        except LiveSafetyError as exc:
+            text = str(exc)
+            if text.startswith("Neustart verweigert"):
+                raise
+            _refuse_restart(text)
+        except Exception:
+            _refuse_restart("Validate-only-Durchgang nicht möglich")
+    if _watched_bytes(paths) != before:
+        _refuse_restart("Abgleich hat Zustand, Stempel oder Kill-Datei verändert")
+
+
+def execute_restart_reconcile(
+    *,
+    gateway: Any,
+    paths: dict[str, Path],
+    cfg: LiveTrendConfig,
+    closes: Callable,
+    log: Callable[[str], None],
+    now: Callable[[], dt.datetime],
+    code_commit: str | None = None,
+) -> str:
+    """Validate-only vor einem Neustart. Speichert weder Zustand noch Stempel.
+
+    Der Client muss ohne Handelsfreigabe laufen. AddOrder geht nur mit
+    ``validate=true`` durch (``_ValidateOnly``). Exit-Grund ist eine
+    ``LiveSafetyError``, die mit ``Neustart verweigert`` beginnt.
+    """
+    if _trading_enabled(gateway):
+        _refuse_restart("Abgleich darf nicht mit Handelsfreigabe laufen")
+    report = assess_restart(
+        gateway=gateway,
+        paths=paths,
+        cfg=cfg,
+        now=now(),
+        code_commit=code_commit,
+    )
+    for line in report.splitlines():
+        log(line)
+    _validate_only_cycle(gateway, paths, cfg, closes, log, now)
+    tail = (
+        "Abgleich bestanden. Es wurde keine Order gelegt und nichts gespeichert. Neustart erlaubt."
+    )
+    log(tail)
+    return report + "\n" + tail
 
 
 class _ValidateOnly:
@@ -568,7 +773,6 @@ def _dry_run_locked(
     write_dry_run_marker(
         paths["dry_run_ok"],
         budget_eur=cfg.budget_eur,
-        state_path=paths["state"],
         daily_loss_enabled=cfg.daily_loss_enabled,
         daily_loss_fraction=cfg.daily_loss_fraction,
         drawdown_enabled=cfg.drawdown_enabled,
