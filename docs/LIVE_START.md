@@ -55,8 +55,10 @@ Was dann passiert:
 - Spätestens eine Stunde nach dem Kauf liegt ein **Stop-Loss bei Kraken** (20 % unter dem
   Höchststand). Er schützt auch, wenn dein Mac schläft oder aus ist, und wird täglich
   nachgezogen.
-- Fällt der Tagesschluss unter den Durchschnitt: Stop stornieren, Verkauf-Limit; wenn bis zum
-  nächsten Tagesschluss nicht ausgeführt, Market-Verkauf.
+- Fällt der Tagesschluss unter den Durchschnitt: der Notfall-Stop **bleibt**. Ein ruhendes
+  Verkaufs-Limit würde ihn verdrängen (Kraken bindet die Menge nur einmal) und bis zum nächsten
+  Tag ungeschützt lassen. Am nächsten Tagesschluss löst der Bot den Stop erst unmittelbar vor
+  dem Market-Verkauf. Kommt der Verkauf nicht zustande, setzt derselbe Durchgang den Stop wieder.
 
 ## 5. Beobachten und eingreifen
 

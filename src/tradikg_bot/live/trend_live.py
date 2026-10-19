@@ -8,8 +8,11 @@ Gleiche Regel wie ``trading/allocation.py`` (Paper/Schnelldurchlauf), aber mit e
 * Sofort nach dem Kauf ein **Notfall-Stop direkt bei Kraken** (``stop-loss``, Verkauf der
   gekauften Menge) 20 % unter dem höchsten Schluss; wird täglich nachgezogen. Er schützt auch,
   wenn der Mac schläft.
-* Ausstieg nach Tagesschluss unter SMA 200: Stop stornieren, Verkauf-Limit post-only; nicht
-  ausgeführt bis zum nächsten Tagesschluss → Market-Verkauf.
+* Ausstieg nach Tagesschluss unter SMA 200: der Notfall-Stop **bleibt**. Kraken bindet die
+  Basismenge nur einmal (``hold_trade``); ein ruhendes Verkaufs-Limit würde den Stop verdrängen
+  und bei einem Kurssturz nicht ausführen. Am nächsten Tagesschluss wird der Stop erst
+  unmittelbar vor dem Market-Verkauf gelöst. Schlägt der Verkauf fehl, setzt derselbe Durchgang
+  den Stop wieder. Ein noch offenes Limit aus einem älteren Lauf wird sofort durch den Stop ersetzt.
 * Nach ausgelöstem Stop erst wieder Einstieg nach neuem Kreuzen von unten.
 
 Sicherheit:
@@ -402,7 +405,9 @@ class LiveTrendRunner:
             closes = self.closes(sym)
             if len(closes) >= self.cfg.sma:
                 self._decide(sym, st, closes, balances)
+            self._release_unprotected_limit_sell(sym, st)
             self._ensure_stop(sym, st)
+            self._alarm_if_naked(sym, st)
             self._save()
         self._write_snapshot()
         return self.state
@@ -613,39 +618,24 @@ class LiveTrendRunner:
                     },
                 )
         if st.sell_txid:
-            self._cancel_and_settle(
-                sym, st, st.sell_txid, "Verkauf-Limit nicht ausgeführt", buy=False
-            )
-            st.sell_txid = None
-        if st.sell_day and st.units > 0 and st.sell_day != day:
-            st.sell_txid = self._submit(
-                sym,
-                "sell_fallback",
-                day,
-                {
-                    "type": "sell",
-                    "ordertype": "market",
-                    "volume": rules.format_volume(rules.round_volume_down(st.units)),
-                },
-            )
-            st.sell_day = None
+            if self._cancel_if_gone(sym, st, st.sell_txid, "Verkauf nicht ausgeführt", buy=False):
+                st.sell_txid = None
+            else:
+                self.log(
+                    f"[ALARM] {sym}: Verkauf {st.sell_txid} liegt weiter – "
+                    "kein zweiter Verkauf, solange die Menge gebunden ist"
+                )
+        if not st.sell_txid and st.sell_day and st.units > 0 and st.sell_day != day:
+            self._market_exit(sym, st, day, rules)
         elif st.units > 0 and not above:
-            self._cancel(st.stop_txid, "Ausstieg per Signal")
-            st.stop_txid, st.stop_price, st.stop_units = None, 0.0, 0.0
-            price = rules.round_price_up(max(close, book.best_ask))
-            st.sell_txid = self._submit(
-                sym,
-                "sell",
-                day,
-                {
-                    "type": "sell",
-                    "ordertype": "limit",
-                    "oflags": "post",
-                    "price": rules.format_price(price),
-                    "volume": rules.format_volume(rules.round_volume_down(st.units)),
-                },
-            )
-            st.sell_day = day
+            # Kein Post-only: das Limit würde die vom Stop gebundene Menge brauchen und den
+            # Kurssturz nicht auffangen. Der Stop bleibt, bis _market_exit ihn ablöst.
+            if st.sell_day != day:
+                st.sell_day = day
+                self.log(
+                    f"[AUSSTIEG] {sym}: Tagesschluss unter SMA – Notfall-Stop bleibt bis zum "
+                    "Market-Verkauf am nächsten Tagesschluss"
+                )
         elif st.units > 0:
             st.peak = max(st.peak, close)
         elif above and not st.blocked and not st.buy_txid:
@@ -656,6 +646,103 @@ class LiveTrendRunner:
             else:
                 self._buy(sym, st, day, close, book, rules, balances)
         st.last_candle = day
+
+    def _cancel_if_gone(self, sym: str, st: SymbolState, txid: str, why: str, *, buy: bool) -> bool:
+        """Storniert ``txid``. True, wenn die Order danach nicht mehr offen ist – eine
+        Teilausführung ist dann verbucht. False, wenn sie liegen bleibt; der Zustand
+        zeigt dann weiter auf diese Order."""
+        self._cancel(txid, why)
+        order = self.gw.query_orders([txid]).get(txid)
+        if order is not None and not order.status.is_final:
+            return False
+        if order is not None:
+            (self._apply_buy if buy else self._apply_sell)(sym, st, order)
+        return True
+
+    def _market_exit(self, sym: str, st: SymbolState, day: str, rules) -> None:
+        """Market-Verkauf. Der Stop wird erst hier gelöst, weil Kraken die Basismenge nur
+        einmal bindet. Bleibt der Stop offen oder wird der Verkauf abgelehnt, ist die Position
+        am Ende des Durchgangs wieder börsenseitig geschützt (``_ensure_stop``)."""
+        if self.dry_run:
+            if st.stop_txid:
+                self._cancel(st.stop_txid, "Market-Ausstieg – Stop gibt die Menge frei")
+            if st.units > 0 and (volume := rules.round_volume_down(st.units)) > 0:
+                self._submit(
+                    sym,
+                    "sell_fallback",
+                    day,
+                    {
+                        "type": "sell",
+                        "ordertype": "market",
+                        "volume": rules.format_volume(volume),
+                    },
+                )
+            return
+        if st.stop_txid:
+            txid = st.stop_txid
+            if not self._cancel_if_gone(
+                sym, st, txid, "Market-Ausstieg – Stop gibt die Menge frei", buy=False
+            ):
+                self.log(
+                    f"[ALARM] {sym}: Stop {txid} ließ sich nicht lösen – "
+                    "kein Market-Verkauf, der Stop bleibt"
+                )
+                return
+            if st.stop_txid == txid:  # Order weg, aber ohne Abschlussmeldung
+                st.stop_txid, st.stop_price, st.stop_units = None, 0.0, 0.0
+        if st.units <= 0:
+            st.sell_day = None
+            return
+        volume = rules.round_volume_down(st.units)
+        if volume <= 0:
+            self.log(
+                f"[ALARM] {sym}: Restmenge {st.units} ist nicht handelbar – Stop wird benötigt"
+            )
+            return
+        st.sell_txid = self._submit(
+            sym,
+            "sell_fallback",
+            day,
+            {
+                "type": "sell",
+                "ordertype": "market",
+                "volume": rules.format_volume(volume),
+            },
+        )
+        if not st.sell_txid:
+            self.log(
+                f"[ALARM] {sym}: Market-Ausstieg abgelehnt oder unklar – "
+                "Stop wird im selben Durchgang wieder gesetzt"
+            )
+
+    def _release_unprotected_limit_sell(self, sym: str, st: SymbolState) -> None:
+        """Ein ruhendes Verkaufs-Limit ist kein Schutz: es bindet die Menge und fängt einen
+        Kurssturz nicht auf. Market-Aufträge bleiben – die verkaufen in den Bid."""
+        if not st.sell_txid or self.dry_run:
+            return
+        order = self.gw.query_orders([st.sell_txid]).get(st.sell_txid)
+        if order is None or order.status.is_final or order.ordertype == "market":
+            return
+        self.log(
+            f"[SCHUTZ] {sym}: Verkaufs-Limit {st.sell_txid} verdrängt den Stop – "
+            "stornieren und Stop wieder setzen"
+        )
+        txid = st.sell_txid
+        if not self._cancel_if_gone(sym, st, txid, "Limit-Verkauf ohne Stop", buy=False):
+            self.log(
+                f"[ALARM] {sym}: Verkaufs-Limit {txid} ließ sich nicht stornieren – "
+                "Stop kann die gebundene Menge nicht decken"
+            )
+            return
+        st.sell_txid = None
+
+    def _alarm_if_naked(self, sym: str, st: SymbolState) -> None:
+        if self.dry_run or st.units <= 0 or st.stop_txid or st.sell_txid:
+            return
+        self.log(
+            f"[ALARM] {sym}: POSITION OHNE STOP – {st.units} Einheiten, "
+            "weder Notfall-Stop noch Verkaufsorder. Sofort prüfen."
+        )
 
     def _buy(self, sym, st, day, close, book, rules, balances) -> None:
         eur_free = (
