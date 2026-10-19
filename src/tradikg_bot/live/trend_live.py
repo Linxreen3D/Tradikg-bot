@@ -7,7 +7,9 @@ Gleiche Regel wie ``trading/allocation.py`` (Paper/Schnelldurchlauf), aber mit e
   marktnahes IOC-Limit (Ask + 0,5 %) kaufen.
 * Sofort nach dem Kauf ein **Notfall-Stop direkt bei Kraken** (``stop-loss``, Verkauf der
   gekauften Menge) 20 % unter dem höchsten Schluss; wird täglich nachgezogen. Er schützt auch,
-  wenn der Mac schläft.
+  wenn der Mac schläft. Beim Nachziehen bleibt immer ein Stop offen: der neue wird zuerst
+  gelegt, wenn die freie eigene Menge reicht, sonst wird der alte bei einem Fehlschlag
+  wiederhergestellt.
 * Ausstieg nach Tagesschluss unter SMA 200: der Notfall-Stop **bleibt**. Kraken bindet die
   Basismenge nur einmal (``hold_trade``); ein ruhendes Verkaufs-Limit würde den Stop verdrängen
   und bei einem Kurssturz nicht ausführen. Am nächsten Tagesschluss wird der Stop erst
@@ -220,6 +222,8 @@ class LiveTrendRunner:
         self._fresh = not state_path.exists()
         self.state = LiveState.load(state_path)
         self._valuation_block = False
+        self._last_submit_error: str | None = None
+        self._naked_noted: set[str] = set()
         # Aus: kein Guard, keine Zustandsänderung. An: Referenz und Sperre überleben Neustarts.
         self.guard: DailyLossGuard | None = None
         if cfg.daily_loss_enabled:
@@ -243,6 +247,7 @@ class LiveTrendRunner:
         )
 
     def _submit(self, sym: str, kind: str, day: str, params: dict[str, Any]) -> str | None:
+        self._last_submit_error = None
         rules = self.gw.pair_rules(sym)
         params = {"pair": rules.altname, "userref": self._ref(day, sym, kind), **params}
         what = f"{kind} {sym} {params.get('volume')} @ {params.get('price', 'Markt')}"
@@ -272,6 +277,7 @@ class LiveTrendRunner:
                 return None
             txid = found[0].txid
         except OrderRejectedError as exc:
+            self._last_submit_error = str(exc)
             self.log(f"[ABGELEHNT] {what}: {exc}")
             return None
         self.log(f"[ORDER] {what} → {txid}")
@@ -587,6 +593,7 @@ class LiveTrendRunner:
         self._valuation_logged = False
         balances = self._read_balances()
         self._eur_used = 0.0
+        self._naked_noted = set()
         for sym in self.cfg.symbols:
             st = self.state.symbols.setdefault(sym, SymbolState())
             self._sync(sym, st, balances)
@@ -931,6 +938,8 @@ class LiveTrendRunner:
     def _alarm_if_naked(self, sym: str, st: SymbolState) -> None:
         if self.dry_run or st.units <= 0 or st.stop_txid or st.sell_txid:
             return
+        if sym in self._naked_noted:
+            return
         self.log(
             f"[ALARM] {sym}: POSITION OHNE STOP – {st.units} Einheiten, "
             "weder Notfall-Stop noch Verkaufsorder. Sofort prüfen."
@@ -967,26 +976,203 @@ class LiveTrendRunner:
         st.buy_day = day
 
     def _ensure_stop(self, sym: str, st: SymbolState) -> None:
-        """Notfall-Stop bei Kraken setzen bzw. nachziehen (nur für eigene Menge)."""
+        """Notfall-Stop bei Kraken setzen bzw. nachziehen (nur für eigene Menge).
+
+        Kraken bindet die Basismenge eines Verkaufs nur einmal (``hold_trade``). Ein zweiter
+        Stop über die volle Position wird abgelehnt, solange der alte liegt. Deshalb: neuen
+        Stop zuerst legen, wenn die freie *eigene* Menge reicht; sonst den alten lösen, den
+        neuen versuchen und bei Fehlschlag den alten Preis wiederherstellen.
+
+        Ein offener Verkauf (Market-Ausstieg) bindet die Menge selbst. Der Stop wird dann
+        nicht angefasst. Fehlt der Verkauf, legt dieser Durchgang den Stop wieder.
+        """
         if st.units <= 0 or st.sell_txid:
             return
         rules = self.gw.pair_rules(sym)
         target = rules.round_price_down(max(st.peak, st.entry_price) * (1 - self.cfg.stop_frac))
         volume = rules.round_volume_down(st.units)
-        if st.stop_txid and target <= st.stop_price * 1.001 and volume == st.stop_units:
+        if volume <= 0:
             return
-        self._cancel(st.stop_txid, f"Stop nachziehen {st.stop_price:.2f} → {target:.2f}")
+        if st.stop_txid and target <= st.stop_price * 1.001 and volume == st.stop_units:
+            if self.dry_run or self._stop_is_open(st.stop_txid):
+                return
+            st.stop_txid = None  # Preis bleibt, falls der Ersatz scheitert
         day = st.last_candle or str(pd.Timestamp.now(tz="UTC").date())
-        txid = self._submit(
+        if self.dry_run:
+            self._cancel(st.stop_txid, f"Stop nachziehen {st.stop_price:.2f} → {target:.2f}")
+            self._submit_stop(sym, day, rules, target, volume)
+            st.stop_txid, st.stop_price, st.stop_units = None, target, volume
+            return
+        self._move_stop(sym, st, day, rules, target, volume)
+
+    def _submit_stop(self, sym: str, day: str, rules, price: float, volume: float) -> str | None:
+        return self._submit(
             sym,
             "stop",
             day,
             {
                 "type": "sell",
                 "ordertype": "stop-loss",
-                "price": rules.format_price(target),
+                "price": rules.format_price(price),
                 "volume": rules.format_volume(volume),
             },
         )
-        if txid or self.dry_run:
-            st.stop_txid, st.stop_price, st.stop_units = txid, target, volume
+
+    def _stop_is_open(self, txid: str | None) -> bool:
+        if not txid:
+            return False
+        order = self.gw.query_orders([txid]).get(txid)
+        return order is not None and not order.status.is_final
+
+    def _stop_matches(self, txid: str | None, price: float, volume: float) -> bool:
+        if not txid:
+            return False
+        order = self.gw.query_orders([txid]).get(txid)
+        if order is None or order.status.is_final or order.price is None:
+            return False
+        return (
+            abs(order.price - price) <= max(abs(price) * 1e-6, 1e-8)
+            and abs(order.volume - volume) <= 1e-8
+        )
+
+    def _rejected_for_funds(self) -> bool:
+        return "insufficient" in (self._last_submit_error or "").lower()
+
+    def _own_free(self, sym: str, st: SymbolState) -> float:
+        """Eigene Münzen, die weder unser Stop noch eine fremde Order bindet.
+
+        Nur diese Menge darf ein zweiter Stop belegen. Sonst würde er Bestände verkaufen,
+        die nicht zu dieser Position gehören, oder an ``Insufficient funds`` scheitern.
+        """
+        locked = 0.0
+        if st.stop_txid:
+            order = self.gw.query_orders([st.stop_txid]).get(st.stop_txid)
+            if order is not None and not order.status.is_final:
+                locked = max(0.0, order.volume - order.filled)
+        rules = self.gw.pair_rules(sym)
+        bal = self.gw.balances().get(rules.base)
+        exchange_free = bal.available if bal else 0.0
+        return min(max(0.0, st.units - locked), max(0.0, exchange_free))
+
+    def _release_stop(self, sym: str, st: SymbolState, txid: str, why: str) -> bool:
+        """True, wenn der Stop nicht mehr offen ist. Eine Ausführung wird verbucht.
+        Bleibt er offen, zeigt der Zustand weiter auf ihn."""
+        self._cancel(txid, why)
+        order = self.gw.query_orders([txid]).get(txid)
+        if order is not None and not order.status.is_final:
+            return False
+        if order is not None:
+            self._apply_sell(sym, st, order)
+        elif st.stop_txid == txid:
+            st.stop_txid, st.stop_price, st.stop_units = None, 0.0, 0.0
+        return True
+
+    def _move_stop(
+        self, sym: str, st: SymbolState, day: str, rules, target: float, volume: float
+    ) -> None:
+        old_txid, old_price, old_units = st.stop_txid, float(st.stop_price), float(st.stop_units)
+        if self._own_free(sym, st) + 1e-12 >= volume:
+            txid = self._submit_stop(sym, day, rules, target, volume)
+            if self._stop_matches(txid, target, volume):
+                self._keep_new_stop(sym, st, txid, target, volume, old_txid)
+                return
+            idempotent_hit = bool(old_txid and txid == old_txid)
+            keep_old = (
+                self._stop_is_open(old_txid)
+                and not idempotent_hit
+                and not self._rejected_for_funds()
+            )
+            if keep_old:
+                self.log(
+                    f"[ALARM] {sym}: neuer Stop {target:.2f} abgelehnt – "
+                    f"alter Stop {old_txid} bei {old_price:.2f} bleibt aktiv"
+                )
+                return
+        if self._stop_is_open(old_txid):
+            if not self._release_stop(
+                sym, st, old_txid, f"Stop nachziehen {old_price:.2f} → {target:.2f}"
+            ):
+                self.log(
+                    f"[ALARM] {sym}: alter Stop {old_txid} ließ sich nicht lösen – "
+                    "er bleibt, der neue Preis wird nicht erzwungen"
+                )
+                return
+            if st.units <= 0:
+                return
+            volume = rules.round_volume_down(st.units)
+            target = rules.round_price_down(max(st.peak, st.entry_price) * (1 - self.cfg.stop_frac))
+            if volume <= 0:
+                self._alarm_naked_stop(sym, target, old_price)
+                return
+        self._place_or_restore(sym, st, day, rules, target, volume, old_price, old_units)
+
+    def _keep_new_stop(
+        self,
+        sym: str,
+        st: SymbolState,
+        txid: str,
+        target: float,
+        volume: float,
+        old_txid: str | None,
+    ) -> None:
+        old_stuck = (
+            old_txid
+            and old_txid != txid
+            and self._stop_is_open(old_txid)
+            and not self._release_stop(sym, st, old_txid, "neuer Stop steht, alten entfernen")
+        )
+        if old_stuck:
+            self.log(
+                f"[ALARM] {sym}: neuer Stop {txid} steht, alter Stop {old_txid} "
+                "ließ sich nicht lösen"
+            )
+        if st.units <= 0:
+            if self._stop_is_open(txid):
+                self._cancel(txid, "Position bereits geschlossen")
+            return
+        st.stop_txid, st.stop_price, st.stop_units = txid, target, volume
+
+    def _place_or_restore(
+        self,
+        sym: str,
+        st: SymbolState,
+        day: str,
+        rules,
+        target: float,
+        volume: float,
+        old_price: float,
+        old_units: float,
+    ) -> None:
+        for attempt in (1, 2):
+            txid = self._submit_stop(sym, day, rules, target, volume)
+            if self._stop_matches(txid, target, volume):
+                st.stop_txid, st.stop_price, st.stop_units = txid, target, volume
+                return
+            self.log(f"[ALARM] {sym}: Stop {target:.2f} Versuch {attempt} fehlgeschlagen")
+        restore_vol = rules.round_volume_down(min(old_units, st.units)) if old_price > 0 else 0.0
+        if old_price > 0 and restore_vol > 0:
+            for attempt in (1, 2):
+                txid = self._submit_stop(sym, day, rules, old_price, restore_vol)
+                if self._stop_matches(txid, old_price, restore_vol):
+                    st.stop_txid, st.stop_price, st.stop_units = txid, old_price, restore_vol
+                    self.log(
+                        f"[ALARM] {sym}: neuer Stop {target:.2f} gescheitert – alter Stop "
+                        f"{old_price:.2f} für {restore_vol} wiederhergestellt ({txid})"
+                    )
+                    return
+                if self._stop_matches(txid, target, volume):
+                    st.stop_txid, st.stop_price, st.stop_units = txid, target, volume
+                    return
+                self.log(
+                    f"[ALARM] {sym}: Wiederherstellen des Stops {old_price:.2f} "
+                    f"Versuch {attempt} fehlgeschlagen"
+                )
+        st.stop_txid, st.stop_price, st.stop_units = None, 0.0, 0.0
+        self._alarm_naked_stop(sym, target, old_price)
+
+    def _alarm_naked_stop(self, sym: str, target: float, old_price: float) -> None:
+        self._naked_noted.add(sym)
+        self.log(
+            f"[ALARM] {sym}: POSITION OHNE STOP. Neuer Stop {target:.2f} und "
+            f"Wiederherstellung {old_price:.2f} sind gescheitert. Sofort in Kraken prüfen."
+        )

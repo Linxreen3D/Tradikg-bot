@@ -38,6 +38,9 @@ class FakeKraken:
         self.withdraw = False
         self.unknown_next = False
         self.reject_if = None  # params -> True heißt: Order ablehnen, nichts anlegen
+        self.reject_stops = 0
+        self.reject_message = "EOrder:Insufficient funds"
+        self.events: list[tuple] = []
 
     def pair_rules(self, sym):
         return RULES[sym]
@@ -64,10 +67,7 @@ class FakeKraken:
         return total
 
     def balances(self):
-        return {
-            a: Balance(a, v, self._reserved(a) if a == "ZEUR" or v else 0.0)
-            for a, v in self.bal.items()
-        }
+        return {a: Balance(a, v, self._reserved(a)) for a, v in self.bal.items()}
 
     def has_withdrawal_permission(self):
         return self.withdraw
@@ -81,10 +81,15 @@ class FakeKraken:
             return None
         if self.reject_if and self.reject_if(params):
             raise OrderRejectedError("EOrder:Orders do not match")
+        if params.get("ordertype") == "stop-loss" and self.reject_stops > 0:
+            self.reject_stops -= 1
+            self.events.append(("reject", params.get("price")))
+            raise OrderRejectedError(self.reject_message)
         if params["type"] == "sell":
             base = "XXBT" if "XBT" in params["pair"] else "XETH"
             need = float(params["volume"])
             if need > self.bal[base] - self._reserved(base) + 1e-9:
+                self.events.append(("reject", params.get("price")))
                 raise OrderRejectedError("EOrder:Insufficient funds")
         txid = f"T{len(self.orders) + 1}"
         self.orders[txid] = ExchangeOrder(
@@ -101,6 +106,7 @@ class FakeKraken:
         if params.get("timeinforce") == "IOC":  # sofort zum Ask ausgeführt
             sym = "XBTEUR" if "XBT" in params["pair"] else "ETHEUR"
             self.fill(txid, price=self.price[sym] * 1.001)
+        self.events.append(("add", params["ordertype"], params.get("price"), txid))
         if self.unknown_next:
             self.unknown_next = False
             raise OutcomeUnknownError("Timeout nach dem Senden")
@@ -113,6 +119,7 @@ class FakeKraken:
         return [o for t, o in self.orders.items() if self.refs[t] == ref]
 
     def cancel_order(self, txid):
+        self.events.append(("cancel", txid))
         o = self.orders[txid]
         if o.status == OrderStatus.OPEN:
             o.status = OrderStatus.CANCELED
@@ -830,6 +837,159 @@ def test_paper_replay_exit_never_ends_a_cycle_without_protection(tmp_path, capsy
     captured = capsys.readouterr().out
     assert "protected=yes" in captured
     assert "protected=NO" not in captured
+    print(captured, file=sys.stderr, end="")
+
+
+def test_new_stop_is_placed_before_the_unlocked_old_one(tmp_path):
+    """Der alte Auftrag bindet nichts (Volumen 0). Der neue Stop muss vorher stehen."""
+    fake, m = _bought(tmp_path)
+    r = runner(tmp_path, fake, m)
+    for sym in ("XBTEUR", "ETHEUR"):
+        stop = next(o for o in fake.open("stop-loss") if o.pair == sym)
+        stop.volume = 0.0
+        r.state.symbols[sym].stop_units = 0.0
+    fake.events.clear()
+    m.day(150)
+    r.run_once()
+    assert [e[0] for e in fake.events[:2]] == ["add", "cancel"]
+    assert len(fake.open("stop-loss")) == 2
+    assert next(o.price for o in fake.open("stop-loss") if o.pair == "XBTEUR") == pytest.approx(
+        120.0
+    )
+
+
+def test_rejected_replacement_restores_the_old_stop(tmp_path):
+    logs: list[str] = []
+    fake, m = _bought(tmp_path)
+    old = {o.pair: o.price for o in fake.open("stop-loss")}
+    r = runner(tmp_path, fake, m)
+    r.log = logs.append
+    fake.reject_stops = 2  # beide Versuche des neuen BTC-Stops, dann Wiederherstellung
+    fake.events.clear()
+    m.day(150)
+    r.run_once()
+    assert [e[0] for e in fake.events[:4]] == ["cancel", "reject", "reject", "add"]
+    (btc,) = [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    assert btc.price == pytest.approx(old["XBTEUR"])
+    assert r.state.symbols["XBTEUR"].stop_txid == btc.txid
+    eth = next(o for o in fake.open("stop-loss") if o.pair == "ETHEUR")
+    assert eth.price == pytest.approx(12.0)  # 15 × 0,8, der Zähler war schon leer
+    assert any("wiederhergestellt" in line for line in logs)
+
+
+def test_failed_restore_leaves_no_pretend_stop_and_alarms(tmp_path):
+    logs: list[str] = []
+    fake, m = _bought(tmp_path)
+    r = runner(tmp_path, fake, m)
+    r.log = logs.append
+    fake.reject_stops = 20  # neuer Stop und Wiederherstellung, beide Paare
+    m.day(150)
+    r.run_once()
+    assert not fake.open("stop-loss")
+    assert r.state.symbols["XBTEUR"].stop_txid is None
+    assert r.state.symbols["ETHEUR"].stop_txid is None
+    assert sum("POSITION OHNE STOP" in line for line in logs) == 2
+
+
+def test_invalid_new_stop_does_not_cancel_the_live_one(tmp_path):
+    logs: list[str] = []
+    fake, m = _bought(tmp_path)
+    r = runner(tmp_path, fake, m)
+    r.log = logs.append
+    for sym in ("XBTEUR", "ETHEUR"):
+        stop = next(o for o in fake.open("stop-loss") if o.pair == sym)
+        stop.volume = 0.0  # frei genug, um den neuen Stop zuerst zu versuchen
+        r.state.symbols[sym].stop_units = 0.0
+    ids = {o.pair: o.txid for o in fake.open("stop-loss")}
+    fake.reject_stops = 1
+    fake.reject_message = "EOrder:Invalid price"
+    fake.events.clear()
+    m.day(150)
+    r.run_once()
+    assert ("cancel", ids["XBTEUR"]) not in fake.events
+    assert fake.orders[ids["XBTEUR"]].status == OrderStatus.OPEN
+    assert r.state.symbols["XBTEUR"].stop_txid == ids["XBTEUR"]
+    assert any("bleibt aktiv" in line for line in logs)
+
+
+def test_unknown_outcome_keeps_the_stop_the_exchange_already_accepted(tmp_path):
+    fake, m = _bought(tmp_path)
+    r = runner(tmp_path, fake, m)
+    fake.unknown_next = True  # Order entsteht, die Antwort geht verloren
+    m.day(150)
+    r.run_once()
+    btc = [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    assert len(btc) == 1
+    assert btc[0].price == pytest.approx(120.0)
+    assert r.state.symbols["XBTEUR"].stop_txid == btc[0].txid
+
+
+def test_cancel_that_leaves_the_stop_open_does_not_send_another(tmp_path):
+    logs: list[str] = []
+    fake, m = _bought(tmp_path)
+    r = runner(tmp_path, fake, m)
+    r.log = logs.append
+    ids = {o.txid for o in fake.open("stop-loss")}
+
+    def refuse(txid):
+        return None
+
+    fake.cancel_order = refuse
+    fake.events.clear()
+    m.day(150)
+    r.run_once()
+    assert {o.txid for o in fake.open("stop-loss")} == ids
+    assert not [e for e in fake.events if e[0] in {"add", "reject"}]
+    assert any("ließ sich nicht lösen" in line for line in logs)
+
+
+def test_paper_replay_trailing_stop_survives_a_rejected_replace(tmp_path, capsys):
+    logs: list[str] = []
+    fake, m = FakeKraken(), Market()
+    r = runner(tmp_path, fake, m)
+    r.log = logs.append
+    transcript: list[str] = []
+
+    def step(title: str) -> None:
+        r.run_once()
+        lines = [title]
+        for sym in r.cfg.symbols:
+            st = r.state.symbols[sym]
+            stops = [o for o in fake.open("stop-loss") if o.pair == sym]
+            protected = st.units <= 1e-12 or bool(stops)
+            stop_txt = ",".join(f"{o.price:.2f}" for o in stops) or "–"
+            line = (
+                f"{sym} close={float(r.closes(sym).iloc[-1]):.2f} units={st.units:.8f} "
+                f"stop={stop_txt} protected={'yes' if protected else 'NO'}"
+            )
+            assert protected, line
+            lines.append("  " + line)
+        transcript.append("\n".join(lines))
+
+    m.day(110)
+    r.run_once()
+    for order in list(fake.open("limit")):
+        fake.fill(order.txid)
+    step("nach Kauf und erstem Stop")
+    m.day(130)
+    step("höherer Schluss, Stop nachgezogen")
+    before = {o.pair: o.price for o in fake.open("stop-loss")}
+    fake.reject_stops = 2
+    m.day(160)
+    step("neuer BTC-Stop abgelehnt – alter Preis wiederhergestellt")
+    btc = next(o for o in fake.open("stop-loss") if o.pair == "XBTEUR")
+    assert btc.price == pytest.approx(before["XBTEUR"])
+    assert any("wiederhergestellt" in line for line in logs)
+    fake.reject_stops = 0
+    m.day(180)
+    step("nächster Tag zieht beide Stops nach")
+    assert next(o.price for o in fake.open("stop-loss") if o.pair == "XBTEUR") == pytest.approx(
+        144.0
+    )
+    print("PAPER REPLAY (Scheinbörse, kein Netz)")
+    print("\n\n".join(transcript))
+    captured = capsys.readouterr().out
+    assert "protected=yes" in captured and "protected=NO" not in captured
     print(captured, file=sys.stderr, end="")
 
 
