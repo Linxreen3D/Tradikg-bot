@@ -20,6 +20,7 @@ Kein Hebel, nur long, nur virtuelles Geld.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -28,8 +29,11 @@ from tradikg_bot.costs import KRAKEN_SPOT_MAKER, KRAKEN_SPOT_TAKER
 from tradikg_bot.risk.limits import (
     TREND_DAILY_LOSS_FRACTION,
     TREND_DAILY_LOSS_TIMEZONE,
+    TREND_DRAWDOWN_FRACTION,
     DailyLossGuard,
+    DrawdownGuard,
     validate_trend_daily_loss,
+    validate_trend_drawdown,
 )
 
 STRATEGY = "trend_sma200"
@@ -53,9 +57,13 @@ class TrendConfig:
     daily_loss_enabled: bool = False
     daily_loss_fraction: float = TREND_DAILY_LOSS_FRACTION
     daily_loss_timezone: str = TREND_DAILY_LOSS_TIMEZONE
+    # Drawdown vom Equity-Höchststand. Standard aus. 45 % ist die weiteste Schwelle.
+    drawdown_enabled: bool = False
+    drawdown_fraction: float = TREND_DRAWDOWN_FRACTION
 
     def __post_init__(self) -> None:
         validate_trend_daily_loss(self.daily_loss_fraction, self.daily_loss_timezone)
+        validate_trend_drawdown(self.drawdown_fraction)
 
 
 @dataclass
@@ -76,6 +84,7 @@ class TrendState:
     blocked: dict[str, bool] = field(default_factory=dict)  # nach Notfall-Stop
     trade_seq: int = 0
     daily_loss: dict[str, Any] | None = None  # Guard-Zustand, nur wenn die Grenze an ist
+    drawdown: dict[str, Any] | None = None  # Höchststand und Sperre, nur wenn an
 
     def to_json(self) -> dict[str, Any]:
         d = asdict(self)
@@ -111,6 +120,12 @@ class TrendAllocator:
                 limit=self.cfg.daily_loss_fraction,
                 timezone=self.cfg.daily_loss_timezone,
             )
+        self.drawdown: DrawdownGuard | None = None
+        self.drawdown_file: Path | None = None
+        if self.cfg.drawdown_enabled:
+            self.drawdown = DrawdownGuard.restore(
+                self.state.drawdown, limit=self.cfg.drawdown_fraction
+            )
 
     # -- Bewertung -----------------------------------------------------------------------------
     def open_count(self) -> int:
@@ -141,6 +156,8 @@ class TrendAllocator:
         # zählt danach als Tages-PnL, auch wenn sie die erste des Wiener Tages ist.
         if self.guard is not None:
             self._roll_daily_loss(ts, closes)
+        if self.drawdown is not None:
+            self._sync_drawdown(ts, closes, log)
         for sym in self.symbols:
             bar = bars.get(sym)
             if bar is None:
@@ -189,8 +206,11 @@ class TrendAllocator:
                 log.append(self._log(ts, sym, sma, bar.close, "exit", "Schluss unter SMA 200"))
             elif sym not in st.positions and above:
                 loss_block = self._loss_block_reason(closes) if self.guard is not None else None
-                if st.blocked.get(sym) or block_entries or loss_block:
-                    why = loss_block or block_entries or "Sperre nach Notfall-Stop"
+                if self.drawdown is not None:
+                    self._sync_drawdown(ts, closes, log)
+                dd_block = self._drawdown_reason(closes) if self.drawdown is not None else None
+                if st.blocked.get(sym) or block_entries or loss_block or dd_block:
+                    why = dd_block or loss_block or block_entries or "Sperre nach Notfall-Stop"
                     log.append(self._log(ts, sym, sma, bar.close, "rejected", why))
                     continue
                 slot = self.equity(_last(closes)) * cfg.invest_fraction / len(self.symbols)
@@ -213,6 +233,8 @@ class TrendAllocator:
         if self.guard is not None:
             # Auch ohne Kaufversuch festhalten (Neustart muss die Sperre wiederfinden).
             self._loss_block_reason(closes)
+        if self.drawdown is not None:
+            self._sync_drawdown(ts, closes, log)
         return closed, log
 
     def _marks(self, closes: dict[str, pd.Series], *, lag: int = 0) -> dict[str, float]:
@@ -231,6 +253,48 @@ class TrendAllocator:
         if self.guard.current_day != day:
             self.guard.start_day(day, self.equity(self._marks(closes, lag=1)))
         self.state.daily_loss = self.guard.snapshot()
+
+    def _sync_drawdown(self, ts: pd.Timestamp, closes: dict[str, pd.Series], log: list) -> None:
+        assert self.drawdown is not None
+        equity = self.equity(_last(closes))
+        when = ts.to_pydatetime()
+        if self.drawdown.observe(equity, when):
+            self._write_drawdown_file(equity)
+            log.append(
+                self._log(ts, "PORTFOLIO", 0.0, equity, "halt", self._drawdown_reason(closes) or "")
+            )
+        self.state.drawdown = self.drawdown.snapshot()
+
+    def _drawdown_reason(self, closes: dict[str, pd.Series]) -> str | None:
+        if self.drawdown is None or not self.drawdown.halted:
+            return None
+        equity = self.equity(_last(closes))
+        dd = abs(self.drawdown.drawdown_from(equity))
+        return (
+            f"Drawdown-Sperre {dd:.0%} unter Höchststand {self.drawdown.peak_equity:.2f} € "
+            f"(Grenze −{self.cfg.drawdown_fraction:.0%}), nur manuell lösbar"
+        )
+
+    def _write_drawdown_file(self, equity: float) -> None:
+        if self.drawdown is None or self.drawdown_file is None:
+            return
+        self.drawdown_file.parent.mkdir(parents=True, exist_ok=True)
+        self.drawdown_file.write_text(
+            "Drawdown-Sperre: keine neuen Käufe.\n"
+            f"Höchststand {self.drawdown.peak_equity:.2f} €, zuletzt {equity:.2f} €.\n"
+            "Lösen im Echtbetrieb nur mit: tradikg live drawdown-reset\n"
+            "Diese Datei ist ein Hinweis. Löschen hebt die Sperre nicht auf.\n"
+            "Es wird nichts automatisch verkauft.\n"
+        )
+
+    def reset_drawdown(self) -> None:
+        """Manuelle Lösung im Paper-Lauf. Der nächste Schritt setzt den Höchststand neu."""
+        if self.drawdown is None:
+            return
+        self.drawdown.reset()
+        self.state.drawdown = self.drawdown.snapshot()
+        if self.drawdown_file is not None:
+            self.drawdown_file.unlink(missing_ok=True)
 
     def _loss_block_reason(self, closes: dict[str, pd.Series]) -> str | None:
         """Prüft die Equity zum aktuellen Schluss. None, wenn neue Käufe erlaubt sind."""
@@ -351,6 +415,10 @@ class TrendPaperEngine:
                 cfg or TrendConfig(),
                 TrendState.from_json(raw) if raw else None,
             )
+        if getattr(self.alloc, "drawdown", None) is not None:
+            from tradikg_bot.risk.limits import DRAWDOWN_HALT_NAME
+
+            self.alloc.drawdown_file = paths.db.parent / DRAWDOWN_HALT_NAME
         self.min_history = self.alloc.cfg.sma  # Vorlauf beim Erststart
         n = self.alloc.cfg.sma + 10
         self.closes = {s: self.store.bars(s, limit=n)["close"] for s in rules}
