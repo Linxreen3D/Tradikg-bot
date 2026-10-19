@@ -1,19 +1,22 @@
 """Laden der Kraken-API-Zugangsdaten – niemals aus dem Repository.
 
 Quellen (in dieser Reihenfolge):
-1. Umgebungsvariablen ``KRAKEN_API_KEY`` und ``KRAKEN_API_SECRET``
-2. JSON-Datei, deren Pfad in ``TRADIKG_KRAKEN_CREDENTIALS`` steht
-   (``{"api_key": "...", "api_secret": "..."}``). Die Datei muss außerhalb jedes
-   Git-Arbeitsverzeichnisses liegen und darf nur für den Besitzer lesbar sein (0600).
-3. macOS-Schlüsselbund (empfohlen auf dem Mac), Dienst ``tradikg-kraken``,
+1. macOS-Schlüsselbund (auf dem Mac), Dienst ``tradikg-kraken``,
    Konten ``api-key`` und ``api-secret``. Anlegen im Terminal (fragt die Werte ab,
    nichts landet in der Shell-Historie)::
 
        security add-generic-password -s tradikg-kraken -a api-key -w
        security add-generic-password -s tradikg-kraken -a api-secret -w
 
-Empfohlene Key-Berechtigungen: *Query Funds*, *Query Open Orders & Trades*,
-*Query Closed Orders & Trades*, *Create & Modify Orders*, *Cancel/Close Orders*.
+2. Umgebungsvariablen ``KRAKEN_API_KEY`` und ``KRAKEN_API_SECRET`` – Fallback, wenn
+   der Schlüsselbund fehlt oder leer ist (Linux-Betrieb, systemd-``EnvironmentFile``).
+3. JSON-Datei, deren Pfad in ``TRADIKG_KRAKEN_CREDENTIALS`` steht
+   (``{"api_key": "...", "api_secret": "..."}``). Die Datei muss außerhalb jedes
+   Git-Arbeitsverzeichnisses liegen und darf nur für den Besitzer lesbar sein (0600).
+
+Die Werte werden nicht geloggt (``repr`` maskiert sie). Empfohlene Key-Berechtigungen:
+*Query Funds*, *Query Open Orders & Trades*, *Query Closed Orders & Trades*,
+*Create & Modify Orders*, *Cancel/Close Orders*.
 **Nicht** vergeben: *Withdraw Funds*, *Deposit Funds*, *Export Data*, Earn/Staking.
 """
 
@@ -78,26 +81,40 @@ def _keychain_lookup(account: str) -> str | None:
     return out.stdout.strip() or None if out.returncode == 0 else None
 
 
+def _keychain_pair(keychain: Callable[[str], str | None]) -> tuple[str | None, str | None]:
+    """Liest Key und Secret. Fehler und Teiltreffer fallen auf die nächste Quelle zurück.
+
+    Die Rückgabe wird nicht protokolliert.
+    """
+    try:
+        return keychain("api-key"), keychain("api-secret")
+    except Exception:
+        return None, None
+
+
 def load_credentials(
     env: dict[str, str] | None = None,
     keychain: Callable[[str], str | None] | None = None,
 ) -> KrakenCredentials:
     env = dict(os.environ) if env is None else env
+    chain = keychain
+    if chain is None and sys.platform == "darwin":
+        chain = _keychain_lookup
+    if chain is not None:
+        key, secret = _keychain_pair(chain)
+        if key and secret:
+            return KrakenCredentials(key, secret)
     if env.get(ENV_KEY) or env.get(ENV_SECRET):
         return KrakenCredentials(env.get(ENV_KEY, ""), env.get(ENV_SECRET, ""))
     file_path = env.get(ENV_FILE)
     if not file_path:
-        if keychain is None and sys.platform == "darwin":
-            keychain = _keychain_lookup
-        if keychain is not None:
-            key, secret = keychain("api-key"), keychain("api-secret")
-            if key and secret:
-                return KrakenCredentials(key, secret)
         raise CredentialsError(
-            f"Keine Zugangsdaten: {ENV_KEY}/{ENV_SECRET}, {ENV_FILE} oder macOS-Schlüsselbund "
-            f"(Dienst '{KEYCHAIN_SERVICE}')."
+            f"Keine Zugangsdaten: macOS-Schlüsselbund (Dienst '{KEYCHAIN_SERVICE}'), "
+            f"{ENV_KEY}/{ENV_SECRET} oder {ENV_FILE}."
         )
     path = Path(file_path).expanduser().resolve()
+    if not path.is_file():
+        raise CredentialsError(f"Zugangsdatei {path} ({ENV_FILE}) existiert nicht")
     if _inside_git_worktree(path):
         raise CredentialsError(
             f"{path} liegt in einem Git-Arbeitsverzeichnis – Zugangsdaten nur außerhalb speichern."

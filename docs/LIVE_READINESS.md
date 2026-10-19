@@ -1,6 +1,6 @@
 # Live-Readiness-Bericht
 
-Stand: 16.10.2026
+Stand: 17.10.2026
 
 ## Entscheidung: **NOT LIVE READY**
 
@@ -14,17 +14,27 @@ gesperrt. In diesem Sprint wurden keine echten Orders gesendet.
 1. **Kraken Spot bietet keinen börsenseitigen SL/TP-Bracket (OCO) über die API.**
    Die Spot-API kennt nur *Conditional Close* (OTO, ein Folgeauftrag). TP/SL mit OCO
    ist für Spot nur in der Kraken-Pro-Oberfläche dokumentiert (Blog Januar 2025).
-   Eine erneute Recherche am 16.10.2026 ergab keinen neuen API-Parameter. Inoffizielle
+   Erneute Prüfung der offiziellen AddOrder-Doku am 17.10.2026: Ordertypen market, limit,
+   iceberg, stop-loss(-limit), take-profit(-limit), trailing-stop(-limit), settle-position;
+   nur *ein* `close[…]`-Folgeauftrag, kein OCO. Inoffizielle
    Endpunkte oder UI-Automatisierung werden nicht verwendet.
-2. **Keine Prüfung unter echten Börsenbedingungen.** Die Entwicklungsumgebung
-   blockiert `api.kraken.com`; Marktdaten, Mindestgrößen und Gebühren wurden nur mit
-   Emulatoren und Fakes getestet.
-3. **Kein bestätigter Vorteil auf echten Daten.** Die Research-Engine wurde nur auf
-   synthetischen Daten ausgeführt. Ob eine Strategie auf echten Kraken-Daten nach
-   Kosten einen Vorteil hat, ist offen.
-4. **Kostenstruktur.** Bei 0,40 % Taker-Gebühr je Seite (Annahme Kraken-Grundstufe) und
+2. **Keine Prüfung mit echten Orders.** Seit 17.10.2026 laufen öffentliche Kraken-Daten
+   (OHLC, AssetPairs, Ticker) auf dem Mac; private Endpunkte und echte Orders wurden
+   nie genutzt.
+3. **Kein bestätigter Vorteil auf echten Daten.** Research und Walk-Forward-Replay auf
+   echten Kraken-Daten (1d: 2 Jahre, 1h/15m/5m: Q3 2026) bestätigen keine Strategie nach
+   Kosten; der Bot hat in keinem Zeitraum gehandelt (docs/MAC_FIRST_RUN_REPORT.md).
+4. **Kostenstruktur.** Bei 0,80 % Taker-Gebühr je Seite (Kraken-Pro-Stufe 1, Stand 17.10.2026) und
    ATR-basierten Stops auf Stundenbasis fressen die Kosten in den Tests regelmäßig
    jeden Vorteil auf. Das ist kein Fehler, sondern ein realistisches Ergebnis.
+
+## Nachtrag 18.10.2026: Trendfolge-Echtbetrieb mit kleinem Budget
+
+Auf ausdrücklichen Wunsch des Nutzers gebaut: `tradikg live` (docs/LIVE_START.md). Die
+Trendfolge braucht **keinen SL+TP-Bracket**, nur einen einzelnen serverseitigen Stop-Loss – das
+bietet die Kraken-Spot-API. Budget hart ≤ 50 € (Standard 20 €), nur BTC/ETH Spot, eigene Mengen
+per `userref`, idempotent, Abbruch bei Auszahlungsrecht/Margin, Probelauf mit `validate=true`.
+Der bestehende Bracket-/Signal-Pfad bleibt **NOT LIVE READY**.
 
 ## Alternative Broker (nur Recherche, keine Konten angelegt)
 

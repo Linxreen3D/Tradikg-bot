@@ -10,6 +10,7 @@ from tradikg_bot.cli import main
 from tradikg_bot.live import cli_kraken
 from tradikg_bot.live.paper import PaperExchange
 
+from helpers import MECHANICS_FEES
 from live_helpers import DOC_SECRET, DOC_SIGNATURE
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,7 +41,7 @@ def test_paper_trade_with_test_double_bracket(tmp_path, capsys):
             "--stop-loss",
             "58000",
             "--take-profit",
-            "64000",
+            "66000",  # lohnt sich nach 0,80 % Taker
             "--simulate-bracket",
             "--journal",
             str(tmp_path / "p.sqlite"),
@@ -78,7 +79,7 @@ def test_live_trade_without_credentials_sends_nothing(tmp_path, capsys, monkeypa
 
 
 def test_live_trade_blocked_without_approval_even_if_bracket_existed(tmp_path, capsys, monkeypatch):
-    fake = PaperExchange(native_bracket=True)
+    fake = PaperExchange(native_bracket=True, fees=MECHANICS_FEES)
     fake.is_live = True
     fake.set_book("XBTEUR", 60000.0, 60010.0)
     monkeypatch.setattr(cli_kraken, "_live_gateway", lambda allow_trading, journal: fake)

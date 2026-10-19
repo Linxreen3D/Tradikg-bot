@@ -19,7 +19,17 @@ REQUIRED = {
     "start_dashboard.sh",
     "run_tests.sh",
     "check_environment.sh",
+    "logs.sh",
 }
+
+
+def test_live_buy_now_defaults_to_the_same_20_eur_as_start_live():
+    buy = (ROOT / "scripts" / "live_buy_now.sh").read_text()
+    start = (ROOT / "scripts" / "start_live.sh").read_text()
+    assert 'BUDGET="${1:-20}"' in buy
+    assert 'BUDGET="${1:-20}"' in start
+    assert "19" not in buy
+    assert 'start_live.sh" "$BUDGET"' in buy
 
 
 def test_all_required_scripts_exist_and_are_executable():

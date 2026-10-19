@@ -26,6 +26,7 @@ import math
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
+from tradikg_bot.costs import KRAKEN_SPOT_MAKER, KRAKEN_SPOT_TAKER
 from tradikg_bot.live.models import (
     Balance,
     BracketNotSupportedError,
@@ -72,7 +73,9 @@ def generic_rules(altname: str, price: float, base: str | None = None) -> PairRu
 class PaperExchange:
     rules: dict[str, PairRules] = field(default_factory=lambda: dict(PAPER_RULES))
     books: dict[str, OrderBook] = field(default_factory=dict)
-    fees: FeeRates = field(default_factory=lambda: FeeRates(0.004, 0.0025, "paper (Annahme)"))
+    fees: FeeRates = field(
+        default_factory=lambda: FeeRates(KRAKEN_SPOT_TAKER, KRAKEN_SPOT_MAKER, "paper (Annahme)")
+    )
     balances_: dict[str, float] = field(default_factory=lambda: {"ZEUR": 10.0})
     native_bracket: bool = False
     fill_ratio: float = 1.0  # Anteil des Einstiegs, der ausgeführt wird (Teilausführung)

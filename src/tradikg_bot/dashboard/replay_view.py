@@ -16,6 +16,7 @@ import streamlit as st
 
 from tradikg_bot.dashboard import queries as q
 from tradikg_bot.platform_config import PlatformConfig
+from tradikg_bot.replay.walkforward import weekly_stats
 
 BOT = "#2a78d6"  # Kategorie-Slot 1
 BENCH = "#eb6834"  # Kategorie-Slot 2
@@ -163,6 +164,13 @@ def render(cfg: PlatformConfig) -> None:
         )
         st.markdown("**Equity: Bot vs. Buy & Hold** (gestrichelt: Startkapital)")
         st.altair_chart(lines + start_rule, use_container_width=True)
+        bot_eq = eq[eq["scenario_id"] == scenario_id].set_index("ts")
+        w = weekly_stats(bot_eq["equity"], float(bot["capital"])) if not bot_eq.empty else None
+        if w and w["weeks"]:
+            c = st.columns(3)
+            c[0].metric("Wochen im Plus", f"{w['positive_share']:.0%} von {w['weeks']}")
+            c[1].metric("Schlechteste Woche", _pct(w["worst_week"]))
+            c[2].metric("Median-Woche", _pct(w["median_week"]))
         own = eq[eq["scenario_id"] == scenario_id].copy()
         values = pd.concat([pd.Series([bot["capital"]]), own["equity"]], ignore_index=True)
         dd = (values / values.cummax() - 1).iloc[1:].to_numpy() * 100

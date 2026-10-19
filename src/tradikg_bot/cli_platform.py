@@ -242,14 +242,20 @@ def cmd_ml_train(args: argparse.Namespace) -> int:
 
 # -- Paper ----------------------------------------------------------------------------------
 def cmd_paper_run(args: argparse.Namespace) -> int:
-    from tradikg_bot.service.ops import setup_logging
+    from tradikg_bot.service.ops import AlreadyRunningError, InstanceLock, setup_logging
     from tradikg_bot.service.paper_service import PaperService
 
     cfg = _cfg(args)
     log = setup_logging(cfg.log_dir, cfg.log_level)
     service = PaperService(cfg, logger=log)
     if args.once:
-        status = service.run_once()
+        # Dieselbe Sperre wie der Dauerbetrieb – sonst doppelte Verarbeitung derselben Kerze
+        try:
+            with InstanceLock(cfg.lock_file):
+                status = service.run_once()
+        except AlreadyRunningError as exc:
+            print(f"Abgelehnt: {exc}. Erst scripts/stop_bot.sh ausführen.")
+            return 1
         print(
             f"Schritte verarbeitet: {status['processed_steps']}, Sperre: "
             f"{status['entries_blocked']}"

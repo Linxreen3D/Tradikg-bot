@@ -16,7 +16,7 @@ HARD_CAP_EUR = 10.0  # absolute Obergrenze – per Konfiguration nicht erhöhbar
 @dataclass(frozen=True)
 class LiveRiskConfig:
     pilot_capital_eur: float = HARD_CAP_EUR
-    daily_loss_fraction: float = 0.10
+    daily_loss_fraction: float = 0.10  # nur Bracket-Pilot; die Trendfolge nutzt LiveTrendConfig
     max_loss_per_trade_eur: float = 0.50
     max_spread_bps: float = 30.0
     max_entry_slippage_bps: float = 30.0  # Abstand des marktfähigen IOC-Limits zum besten Ask

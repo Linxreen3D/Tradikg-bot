@@ -12,8 +12,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from tradikg_bot.dashboard import cockpit, goal, health, live_view, replay_view
 from tradikg_bot.dashboard import queries as q
-from tradikg_bot.dashboard import replay_view
 from tradikg_bot.platform_config import PlatformConfig
 
 SERIES = "#2a78d6"  # Referenzfarbe Slot 1 (einreihige Diagramme)
@@ -31,12 +31,19 @@ def main() -> None:
     st.set_page_config(page_title="Tradikg Paper", page_icon="📈", layout="wide")
     cfg = PlatformConfig.load()
     st.title("Tradikg – Paper-Trading & Research")
-    st.caption("Nur virtuelles Kapital. Kein Echtgeldhandel. Keine Renditeversprechen.")
+    st.caption(
+        "Live-Bot und Paper-Bot: virtuelles Kapital · Echtgeld-Bot (19 €, Kraken): siehe Cockpit · "
+        "Keine Renditeversprechen."
+    )
     if st.button("Aktualisieren"):
         st.rerun()
 
     tabs = st.tabs(
         [
+            "🔴 Live-Bot",
+            "🎯 Ziel-Check",
+            "🎛 Cockpit",
+            "🩺 Strategy-Health",
             "Übersicht",
             "Trading",
             "Analytics",
@@ -44,6 +51,7 @@ def main() -> None:
             "AI Research",
             "System Health",
             "Einstellungen",
+            "▶ Testdurchlauf",
         ]
     )
     b = q.balances(cfg)
@@ -51,6 +59,18 @@ def main() -> None:
     h = q.health(cfg)
 
     with tabs[0]:
+        live_view.render(cfg)
+
+    with tabs[1]:
+        goal.render(cfg)
+
+    with tabs[2]:
+        cockpit.render(cfg)
+
+    with tabs[3]:
+        health.render(cfg)
+
+    with tabs[4]:
         c = st.columns(4)
         c[0].metric("Gesamtkapital", eur(b["total_capital"]))
         c[1].metric("Trading-Balance", eur(b["trading_balance"]))
@@ -76,7 +96,7 @@ def main() -> None:
         else:
             st.success("✅ System bereit (Paper)")
 
-    with tabs[1]:
+    with tabs[5]:
         st.subheader("Offene Positionen")
         st.dataframe(q.open_positions(cfg), use_container_width=True, hide_index=True)
         st.subheader("Letzte Trades")
@@ -110,7 +130,7 @@ def main() -> None:
         st.dataframe(q.recent_signals(cfg), use_container_width=True, hide_index=True)
         st.caption(f"Einsetzbares Kapital: {eur(min(cfg.capital_eur, b['trading_balance']))}")
 
-    with tabs[2]:
+    with tabs[6]:
         curve = q.equity_curve(cfg)
         perf = q.performance(cfg)
         o = perf["overall"]
@@ -164,10 +184,10 @@ def main() -> None:
             day = st.selectbox("Tagesbericht", reports["day"])
             st.markdown(reports.set_index("day").loc[day, "markdown"])
 
-    with tabs[3]:
+    with tabs[7]:
         replay_view.render(cfg)
 
-    with tabs[4]:
+    with tabs[8]:
         st.subheader("Strategie-Ranking (letzter Research-Lauf, Testdaten)")
         st.caption("„bestätigt“ gilt nur für die untersuchten Daten – keine Gewinngarantie.")
         st.dataframe(q.research_results(cfg), use_container_width=True, hide_index=True)
@@ -179,7 +199,7 @@ def main() -> None:
         st.subheader("Prognosekalibrierung (vorhergesagt vs. beobachtet)")
         st.dataframe(q.calibration(cfg), use_container_width=True, hide_index=True)
 
-    with tabs[5]:
+    with tabs[9]:
         status = h["status"]
         c = st.columns(4)
         c[0].metric("Letzter Durchgang", status.get("updated_at", "–"))
@@ -195,7 +215,7 @@ def main() -> None:
         st.subheader("Fehler- und Warnprotokoll")
         st.dataframe(h["errors"], use_container_width=True, hide_index=True)
 
-    with tabs[6]:
+    with tabs[10]:
         st.subheader("Einstellungen (nur Anzeige)")
         st.json(q.settings(cfg))
         st.info(
@@ -203,6 +223,99 @@ def main() -> None:
             "eine separate, ausdrückliche Freigabe außerhalb des Dashboards."
         )
         st.caption(f"Stand: {pd.Timestamp.now(tz='UTC'):%Y-%m-%d %H:%M} UTC")
+
+    with tabs[11]:
+        _simulation_tab(cfg)
+
+
+def _simulation_tab(cfg: PlatformConfig) -> None:
+    """Neuer Testdurchlauf per Knopf: Schnelldurchlauf ab Datum + Überblick (ruft `tradikg sim`)."""
+    import datetime as dt
+    import subprocess
+    import sys
+
+    import streamlit.components.v1 as components
+
+    st.markdown(
+        "Der Bot wird an einem Datum der Vergangenheit mit **100 € virtuell** eingesetzt, kennt "
+        "nur die Kurse davor und wird bis heute vorgespult. Der **Überblick** zeigt zusätzlich "
+        "jedes Jahr seit 2019 (jeden Monat neu gestartet). Keine echten Orders."
+    )
+    c = st.columns(3)
+    start = c[0].date_input(
+        "Bot einsetzen am", pd.Timestamp.now().normalize() - pd.DateOffset(years=1)
+    )
+    fraction = c[1].slider(
+        "Risikoregler: höchstens investiert",
+        0.1,
+        1.0,
+        float(cfg.invest_fraction),
+        0.1,
+        format="%.1f",
+        help="0.5 = höchstens die Hälfte des Kapitals im Markt (kleinere Verluste und Gewinne)",
+    )
+    cash_yield = c[2].number_input(
+        "Zins auf Cash p.a. (nur wenn real)",
+        0.0,
+        0.1,
+        float(cfg.cash_yield_pa),
+        0.005,
+        format="%.3f",
+    )
+    mode = st.radio(
+        "Strategie",
+        ["trend", "grid"],
+        format_func={
+            "trend": "Trendfolge (Tageskerzen)",
+            "grid": "Grid-Daytrading (Stundenkerzen)",
+        }.get,
+        horizontal=True,
+    )
+    overview = st.checkbox(
+        "Überblick über alle Ein-Jahres-Zeiträume seit 2019 (nur Trendfolge)", value=mode == "trend"
+    )
+    if st.button("▶ Neuen Testdurchlauf starten", type="primary"):
+        cmd = [sys.executable, "-m", "tradikg_bot", "sim", "--start", str(start)]
+        cmd += ["--invest-fraction", str(fraction), "--cash-yield", str(cash_yield)]
+        cmd += ["--mode", mode, "--timeframe", "1h" if mode == "grid" else "1d"]
+        cmd += ["--overview"] if overview and mode == "trend" else []
+        with st.spinner("Simuliere … (meist unter 1 Minute, höchstens 10 Minuten)"):
+            try:
+                done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                ok, log = done.returncode == 0, done.stdout[-2500:] + done.stderr[-1500:]
+            except subprocess.TimeoutExpired:
+                ok, log = False, "Abgebrochen: länger als 10 Minuten."
+        (st.success if ok else st.error)("Fertig – Ergebnis unten." if ok else "Fehlgeschlagen.")
+        with st.expander("Protokoll"):
+            st.code(log)
+    st.markdown(
+        "---\n**Copy-Trading (virtuell):** wertet die gesammelten öffentlichen DEX-Trades "
+        "aller Chains aus."
+    )
+    if st.button("▶ Copy-Trading auswerten"):
+        with st.spinner("Werte gesammelte Trades aus …"):
+            cmd = [sys.executable, "-m", "tradikg_bot", "copy", "simulate"]
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        (st.success if done.returncode == 0 else st.error)(
+            done.stdout[-1500:] or done.stderr[-1500:]
+        )
+    pages = sorted(
+        [*(cfg.home / "reports").glob("sim-*.html"), *(cfg.home / "reports").glob("copy-*.html")],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not pages:
+        st.info("Noch kein Testdurchlauf gespeichert – Knopf oben drücken.")
+        return
+    page = st.selectbox(
+        "Testdurchläufe (neuester zuerst)",
+        pages,
+        format_func=lambda p: (
+            f"{dt.datetime.fromtimestamp(p.stat().st_mtime):%d.%m.%Y %H:%M} – "
+            + ("Copy-Trading" if p.name.startswith("copy-") else f"Start {p.name[4:14]}")
+        ),
+    )
+    components.html(page.read_text(), height=2200, scrolling=True)
 
 
 main()

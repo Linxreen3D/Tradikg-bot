@@ -59,6 +59,65 @@ class PaperService:
         self.registry = ModelRegistry(cfg.models_db)
         self.symbols = self._resolve_symbols()
         rules = self._rules()
+        self.errors: dict[str, str] = {}
+        if cfg.strategy_mode == "grid":
+            from tradikg_bot.trading.allocation import TrendPaperEngine
+            from tradikg_bot.trading.grid import GridAllocator, GridState, daily_regime
+
+            def factory(symbols, capital, min_order, raw):
+                return GridAllocator(
+                    symbols,
+                    capital,
+                    min_order,
+                    self._grid_regime,
+                    state=GridState.from_json(raw) if raw else None,
+                )
+
+            self._regime_day: str | None = None
+            self._regime = None
+            self.engine = TrendPaperEngine(
+                PaperPaths(cfg.paper_dir),
+                rules,
+                cfg.capital_eur,
+                cfg.timeframe,
+                cfg.tax_rate,
+                allocator_factory=factory,
+                state_key="grid_state",
+                status="grid",
+            )
+            self._daily_regime = daily_regime
+            self.log.info("Modus: Grid-Daytrading (Netz 3 %%, 5 Stufen) für %s", self.symbols)
+            return
+        if cfg.strategy_mode == "trend":
+            from tradikg_bot.trading.allocation import TrendConfig, TrendPaperEngine
+
+            tcfg = TrendConfig(
+                invest_fraction=cfg.invest_fraction,
+                cash_yield_pa=cfg.cash_yield_pa,
+                daily_loss_enabled=cfg.daily_loss_enabled,
+                daily_loss_fraction=cfg.daily_loss_fraction,
+                daily_loss_timezone=cfg.daily_loss_timezone,
+                drawdown_enabled=cfg.drawdown_enabled,
+                drawdown_fraction=cfg.drawdown_fraction,
+            )
+            self.engine = TrendPaperEngine(
+                PaperPaths(cfg.paper_dir), rules, cfg.capital_eur, cfg.timeframe, cfg.tax_rate, tcfg
+            )
+            self.log.info("Modus: Trendfolge-Allokation (SMA 200) für %s", self.symbols)
+            if tcfg.daily_loss_enabled:
+                self.log.info(
+                    "Tagesverlustgrenze an: %.0f%% der Equity zum Tagesbeginn, Reset 00:00 %s "
+                    "(nur neue Käufe, keine Zwangsverkäufe)",
+                    tcfg.daily_loss_fraction * 100,
+                    tcfg.daily_loss_timezone,
+                )
+            if tcfg.drawdown_enabled:
+                self.log.info(
+                    "Drawdown-Sperre an: %.0f%% unter dem Equity-Höchststand "
+                    "(nur neue Käufe, Lösung von Hand, keine Zwangsverkäufe)",
+                    tcfg.drawdown_fraction * 100,
+                )
+            return
         stats = self.research.oos_stats()
         if not stats:
             self.log.warning("Keine Research-Ergebnisse: ohne OOS-Belege wird nicht gehandelt.")
@@ -77,6 +136,19 @@ class PaperService:
             ),
         )
         self.errors: dict[str, str] = {}
+
+    def _grid_regime(self, sym: str, ts: pd.Timestamp) -> bool:
+        """Tagesregime (Schluss über SMA 200) – Tageskerzen höchstens einmal je Tag laden."""
+        day = str(ts.date())
+        if self._regime_day != day:
+            for s in self.symbols:
+                try:
+                    self.md.update_cache(s, "1d")
+                except Exception as exc:
+                    self.log.warning("Tageskerzen %s: %s", s, exc)
+            daily = {s: self.market_store.load_bars(s, "1d")["close"] for s in self.symbols}
+            self._regime, self._regime_day = self._daily_regime(daily), day
+        return self._regime(sym, ts)
 
     def _resolve_symbols(self) -> list[str]:
         if not self.cfg.use_scanner:
@@ -125,11 +197,9 @@ class PaperService:
         last = self.engine.store.last_step()
         if last is None and data:
             newest = max(df.index[-1] for df in data.values())
+            warmup = max(self.cfg.min_history_bars, getattr(self.engine, "min_history", 0))
             seeded = self.engine.seed_history(
-                {
-                    s: df[df.index < newest].iloc[-(self.cfg.min_history_bars + 50) :]
-                    for s, df in data.items()
-                }
+                {s: df[df.index < newest].iloc[-(warmup + 50) :] for s, df in data.items()}
             )
             self.log.info("Erststart: %s Vorlaufkerzen ohne Handel geladen", seeded)
             last = self.engine.store.last_step()

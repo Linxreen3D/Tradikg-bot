@@ -138,3 +138,77 @@ def test_status_file_is_valid_json(tmp_path):
     svc = service(tmp_path, fake)
     svc.run_once()
     json.loads(svc.cfg.status_file.read_text())
+
+
+def test_trend_mode_runs_restarts_and_writes_dashboard_tables(tmp_path):
+    fake = FakeKrakenPublic(NOW, n=400)
+    cfg = config(tmp_path, strategy_mode="trend")
+    svc = PaperService(cfg, api=fake, now=lambda: fake.now)
+    assert svc.run_once()["processed_steps"] == 1
+    assert len(svc.engine.closes["XBTEUR"]) >= 200  # Vorlauf reicht für SMA 200
+    advance(fake, 30)
+    assert svc.run_once()["processed_steps"] == 30
+    state = svc.engine.store.get_json("trend_state")
+    signals = svc.engine.store.conn.execute("SELECT COUNT(*) FROM signals_log").fetchone()[0]
+    rows = svc.engine.store.conn.execute("SELECT COUNT(*) FROM equity").fetchone()[0]
+    assert state is not None and rows == 31 and signals >= 0
+    # Neustart: Zustand wird geladen, nichts doppelt verarbeitet
+    again = PaperService(cfg, api=fake, now=lambda: fake.now)
+    assert again.run_once()["processed_steps"] == 0
+    assert again.engine.alloc.state.to_json() == state
+
+
+def test_trend_mode_uses_configured_invest_fraction(tmp_path):
+    fake = FakeKrakenPublic(NOW, n=400)
+    cfg = config(tmp_path, strategy_mode="trend", invest_fraction=0.5, cash_yield_pa=0.01)
+    svc = PaperService(cfg, api=fake, now=lambda: fake.now)
+    assert svc.engine.alloc.cfg.invest_fraction == 0.5
+    assert svc.engine.alloc.cfg.cash_yield_pa == 0.01
+    assert svc.engine.alloc.cfg.daily_loss_enabled is False
+    assert svc.engine.alloc.guard is None
+    enabled = PaperService(
+        config(
+            tmp_path / "enabled",
+            strategy_mode="trend",
+            daily_loss_enabled=True,
+            daily_loss_fraction=0.04,
+            daily_loss_timezone="Europe/Vienna",
+        ),
+        api=fake,
+        now=lambda: fake.now,
+    )
+    assert enabled.engine.alloc.cfg.daily_loss_enabled is True
+    assert enabled.engine.alloc.cfg.daily_loss_fraction == pytest.approx(0.04)
+    assert enabled.engine.alloc.guard is not None
+    assert svc.engine.alloc.drawdown is None
+    assert svc.engine.alloc.cfg.invest_fraction == 0.5
+    drawdown = PaperService(
+        config(
+            tmp_path / "drawdown",
+            strategy_mode="trend",
+            drawdown_enabled=True,
+            drawdown_fraction=0.30,
+        ),
+        api=fake,
+        now=lambda: fake.now,
+    )
+    assert drawdown.engine.alloc.drawdown is not None
+    assert drawdown.engine.alloc.drawdown.limit == pytest.approx(0.30)
+    assert drawdown.engine.alloc.cfg.invest_fraction == 1.0
+    assert drawdown.engine.alloc.drawdown_file is not None
+    assert drawdown.engine.alloc.drawdown_file.name == "DRAWDOWN_HALT"
+
+
+def test_grid_mode_runs_and_restarts(tmp_path, monkeypatch):
+    fake = FakeKrakenPublic(NOW, n=400)
+    cfg = config(tmp_path, strategy_mode="grid")
+    svc = PaperService(cfg, api=fake, now=lambda: fake.now)
+    monkeypatch.setattr(svc, "_grid_regime", lambda sym, ts: True)
+    assert svc.run_once()["processed_steps"] == 1
+    advance(fake, 24)
+    assert svc.run_once()["processed_steps"] == 24
+    state = svc.engine.store.get_json("grid_state")
+    assert state["refs"] and svc.engine.status == "grid"
+    again = PaperService(cfg, api=fake, now=lambda: fake.now)
+    assert again.run_once()["processed_steps"] == 0
+    assert again.engine.alloc.state.to_json() == state

@@ -117,7 +117,7 @@ def _vwap(levels: list[tuple[float, float]], volume: float) -> float | None:
 
 @dataclass(frozen=True)
 class FeeRates:
-    taker: float  # als Anteil, z. B. 0.004 = 0.40 %
+    taker: float  # als Anteil, z. B. 0.008 = 0.80 %
     maker: float
     source: str
 
@@ -149,6 +149,7 @@ class ExchangeOrder:
     parent_txid: str | None = None
     role: LegRole | None = None
     ambiguous: bool = False  # Paper: SL und TP in derselben Kerze, Reihenfolge unbekannt
+    opened_at: float | None = None  # Unix-Sekunden (Kraken ``opentm``); None = unbekannt
 
 
 @dataclass(frozen=True)

@@ -53,8 +53,32 @@ def cmd_data_import_kraken(args: argparse.Namespace) -> int:
         n = store.save_bars(s, args.timeframe, data[s], source="kraken-ohlcvt")
         print(
             f"{s} {args.timeframe}: {n} Kerzen importiert ({data[s].index[0].date()} – "
-            f"{data[s].index[-1].date()})"
+            f"{data[s].index[-1].date()}) | Import-Bereinigung: {data[s].attrs.get('validation')}"
         )
+    return 0
+
+
+def cmd_data_fetch_kraken_full(args: argparse.Namespace) -> int:
+    from tradikg_bot.replay.data import import_kraken_ohlcvt, open_kraken_full_archive
+    from tradikg_bot.storage import SQLiteStore
+
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    symbols = _symbols(args, cfg)
+    store = SQLiteStore(cfg.market_db)
+    archive = open_kraken_full_archive()
+    for tf in args.timeframes.split(","):
+        data = import_kraken_ohlcvt(archive, symbols, tf)
+        for s in symbols:
+            if s not in data:
+                print(f"{s} {tf}: nicht im Komplettarchiv")
+                continue
+            n = store.save_bars(s, tf, data[s], source="kraken-ohlcvt-full")
+            print(
+                f"{s} {tf}: {n} Kerzen ({data[s].index[0].date()} – {data[s].index[-1].date()}) | "
+                f"Import-Bereinigung: {data[s].attrs.get('validation')}"
+            )
+    print(f"Übertragen: {archive.raw.downloaded / 1e6:.1f} MB (Komplettarchiv ≈ 9,5 GB)")
     return 0
 
 
@@ -93,6 +117,61 @@ def cmd_data_coverage(args: argparse.Namespace) -> int:
             f"{c.missing_bars} | Gesamt {c.total_return:+.0%} | Quellen "
             f"{','.join(store.bar_sources(c.symbol, args.timeframe))} | Phasen: {phases}"
         )
+    return 0
+
+
+def cmd_data_quality(args: argparse.Namespace) -> int:
+    import json
+
+    from tradikg_bot.replay.data import quality
+    from tradikg_bot.storage import SQLiteStore
+
+    cfg = _cfg(args)
+    store = SQLiteStore(cfg.market_db)
+    results = []
+    for s in _symbols(args, cfg):
+        for tf in args.timeframes.split(","):
+            bars = store.load_bars(s, tf)
+            if bars.empty:
+                print(f"{s:8} {tf:4} keine Daten")
+                continue
+            q = {"symbol": s, "sources": store.bar_sources(s, tf), **quality(bars, tf)}
+            results.append(q)
+            print(
+                f"{s:8} {tf:4} {q['bars']:6} Kerzen {q['start'][:16]} – {q['end'][:16]} UTC | "
+                f"fehlend {q['missing_bars']} ({q['missing_share']:.1%}), Lücken {q['gap_count']} "
+                f"(max {q['largest_gap']}) | ungültig {q['invalid_rows']} | Duplikate "
+                f"{q['duplicates']} | Volumen 0: {q['zero_volume_bars']} | Ausreißer "
+                f"{q['outlier_count']} | letzte offen: {q['last_bar_incomplete']} | "
+                f"{','.join(q['sources'])}"
+            )
+    if not results:
+        return 1
+    out = cfg.home / "reports"
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
+    (out / f"data-quality-{stamp}.json").write_text(json.dumps(results, indent=2))
+    lines = [
+        f"# Datenqualität ({stamp})",
+        "",
+        "Cache ist beim Import bereinigt (Duplikate/ungültige Kerzen entfernt, siehe Import-"
+        "Ausgabe). Lücken = Intervalle ohne Handel bzw. ohne Daten; sie werden nicht aufgefüllt."
+        " Ausreißer (robuster z-Wert > 8) werden nur gemeldet.",
+        "",
+        "| Symbol | Auflösung | Quelle | Kerzen | Von (UTC) | Bis (UTC) | Fehlend | Lücken | "
+        "Größte Lücke | Ungültig | Volumen 0 | Ausreißer | Letzte offen |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for q in results:
+        lines.append(
+            f"| {q['symbol']} | {q['timeframe']} | {','.join(q['sources'])} | {q['bars']} | "
+            f"{q['start'][:16]} | {q['end'][:16]} | {q['missing_bars']} "
+            f"({q['missing_share']:.1%}) | {q['gap_count']} | {q['largest_gap']} | "
+            f"{q['invalid_rows']} | {q['zero_volume_bars']} | {q['outlier_count']} | "
+            f"{q['last_bar_incomplete']} |"
+        )
+    (out / f"data-quality-{stamp}.md").write_text("\n".join(lines) + "\n")
+    print(f"Bericht: {out / f'data-quality-{stamp}.md'} (+ .json)")
     return 0
 
 
@@ -219,6 +298,86 @@ def cmd_replay_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sim(args: argparse.Namespace) -> int:
+    from tradikg_bot.replay.simulate import (
+        render_html,
+        simulate,
+        simulate_grid,
+        simulate_trend,
+        summary_rows,
+    )
+    from tradikg_bot.replay.walkforward import HistoricalReplay, ReplayConfig
+
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    args.source, args.bars = "cache", 0
+    data, source, _ = _load(args, cfg)
+    if not data:
+        print("Keine Daten. Erst `tradikg data fetch-kraken-full` bzw. `fetch-kraken`.")
+        return 1
+    rcfg = ReplayConfig(
+        timeframe=args.timeframe,
+        strategies=tuple(args.strategies.split(",")) if args.strategies else cfg.strategies,
+        rolling_windows=False,
+    )
+    stamp = pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%S")
+    replay = HistoricalReplay(
+        data,
+        cfg.replay_dir / f"sim-{stamp}",
+        rcfg,
+        data_source=source,
+        rules=_rules(args, list(data)),
+        progress=lambda msg: print(f"  … {msg}", flush=True),
+    )
+    try:
+        if args.mode == "grid":
+            from tradikg_bot.storage import SQLiteStore
+
+            store = SQLiteStore(cfg.market_db)
+            daily = {s: store.load_bars(s, "1d")["close"] for s in data}
+            sim = simulate_grid(replay, daily, args.start, args.end)
+        elif args.mode == "trend":
+            sim = simulate_trend(
+                replay,
+                args.start,
+                args.end,
+                invest_fraction=args.invest_fraction or cfg.invest_fraction,
+                cash_yield_pa=cfg.cash_yield_pa if args.cash_yield is None else args.cash_yield,
+            )
+        else:
+            sim = simulate(replay, args.start, args.end, args.research_every)
+    except ValueError as exc:
+        print(f"Abgebrochen: {exc}")
+        return 1
+    if args.overview and args.mode == "trend":
+        from tradikg_bot.replay.simulate import rolling_overview
+
+        print("  … Überblick über alle Ein-Jahres-Zeiträume", flush=True)
+        sim.overview = rolling_overview(
+            replay,
+            args.overview_from,
+            invest_fraction=args.invest_fraction or cfg.invest_fraction,
+            cash_yield_pa=cfg.cash_yield_pa if args.cash_yield is None else args.cash_yield,
+        )
+        ov = sim.overview
+        print(
+            f"Überblick {len(ov)} Zeiträume: im Plus {(ov['bot'] > 0).mean():.0%} | Median "
+            f"{ov['bot'].median():+.1%} | schlechtestes Jahr {ov['bot'].min():+.1%}"
+        )
+    print(f"\nSchnelldurchlauf {sim.start.date()} – {sim.end.date()} ({args.timeframe}):")
+    for r in summary_rows(sim):
+        print(
+            f"  {r['name']:42} {r['start']:8.2f} € -> {r['end']:9.2f} € ({r['ret']:+.1%}) | "
+            f"{r['trades']:3} Trades | Max. DD {r['dd']:+.1%} | Wochen im Plus "
+            f"{r['pos_weeks']:.0%} von {r['weeks']}"
+        )
+    out = cfg.home / "reports" / f"sim-{sim.start.date()}-{stamp}.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render_html(sim))
+    print(f'\nVerlauf als Seite: {out}  (open "{out}")  Keine echten Orders.')
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     def common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--platform-config", help="Pfad zur Plattform-Konfiguration (TOML)")
@@ -236,6 +395,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--symbols")
     p.add_argument("--timeframe", default="1d")
     p.set_defaults(func=cmd_data_import_kraken, platform_cmd=True)
+    p = ds.add_parser(
+        "fetch-kraken-full",
+        help="Nur gewünschte CSVs aus dem Kraken-Komplettarchiv per HTTP-Range laden (wenige MB)",
+    )
+    common(p)
+    p.add_argument("--symbols")
+    p.add_argument("--timeframes", default="1d", help="z. B. 1d,4h,1h")
+    p.set_defaults(func=cmd_data_fetch_kraken_full, platform_cmd=True)
     p = ds.add_parser("fetch-ccxt", help="Lange Historie einer anderen Börse via ccxt laden")
     common(p)
     p.add_argument("--exchange", default="binance")
@@ -249,6 +416,37 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--symbols")
     p.add_argument("--timeframe", default="1d")
     p.set_defaults(func=cmd_data_coverage, platform_cmd=True)
+    p = ds.add_parser("quality", help="Datenqualitätsbericht (Markdown/JSON unter reports/)")
+    common(p)
+    p.add_argument("--symbols")
+    p.add_argument("--timeframes", default="1d", help="z. B. 1d,1h,15m,5m")
+    p.set_defaults(func=cmd_data_quality, platform_cmd=True)
+
+    p = sub.add_parser(
+        "sim", help="Schnelldurchlauf: Bot ab einem vergangenen Datum einsetzen und vorspulen"
+    )
+    common(p)
+    p.add_argument("--start", required=True, help="Einsatzdatum, z. B. 2025-01-01")
+    p.add_argument("--end", help="Enddatum (Standard: letzte verfügbare Kerze)")
+    p.add_argument("--symbols")
+    p.add_argument("--timeframe", default="1d")
+    p.add_argument("--strategies")
+    p.add_argument("--research-every", type=int, default=90, help="Research alle N Kerzen")
+    p.add_argument(
+        "--mode",
+        choices=["trend", "grid", "signals"],
+        default="trend",
+        help="trend = 200-Tage-Allokation (Standard), grid = Daytrading-Netz (mit --timeframe 1h), "
+        "signals = Strategie-Signale mit Research",
+    )
+    p.add_argument("--invest-fraction", type=float, help="trend: max. investierter Anteil (0–1)")
+    p.add_argument("--cash-yield", type=float, help="trend: Cash-Zins p.a., z. B. 0.02")
+    p.add_argument(
+        "--overview", action="store_true", help="trend: zusätzlich alle Ein-Jahres-Zeiträume"
+    )
+    p.add_argument("--overview-from", default="2019-01-01", help="erster Startmonat im Überblick")
+    p.add_argument("--rules", choices=["kraken", "example"], default="kraken")
+    p.set_defaults(func=cmd_sim, platform_cmd=True)
 
     replay = sub.add_parser("replay", help="Historical Market Replay mit Walk-Forward-Tests")
     rs = replay.add_subparsers(dest="replay_cmd", required=True)

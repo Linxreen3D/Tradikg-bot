@@ -1,0 +1,30 @@
+# systemd-Benutzerunit für den Echtgeld-Trendbot (20-€-Scheibe).
+# Installation: scripts/install_linux_unit.sh (ersetzt @REPO@, startet nichts).
+# Linger, sonst endet die Unit beim Abmelden:
+#   sudo loginctl enable-linger "$USER"
+# Zustand, Kill-Datei, PID und Sperre liegen unter TRADIKG_HOME/live
+# (trend_state.json, KILL_SWITCH, live.pid, live.lock) – dasselbe Layout wie auf dem Mac.
+
+[Unit]
+Description=Tradikg live trend bot (20 EUR slice)
+Documentation=file://@REPO@/docs/CUTOVER.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=30
+# Exit 2 ist Schutz (Abgleich, Auszahlung, Kill der Schleife). Nicht neu starten.
+RestartPreventExitStatus=2
+Environment=TRADIKG_HOME=%h/.tradikg
+Environment=TRADIKG_REPO=@REPO@
+# Geheimnisse nur hier, außerhalb des Repos, chmod 600. Nicht committen, nicht loggen.
+EnvironmentFile=%h/.config/tradikg/live.env
+WorkingDirectory=@REPO@
+# Die Schleife startet den Bot mit Budget 20, Tagesverlust 5 %, Drawdown 0.45
+# und --require-dry-run. Vor jedem Start, auch nach einem Absturz, restart-check.
+ExecStart=%h/.local/bin/tradikg_run_live_loop.sh
+
+[Install]
+WantedBy=default.target

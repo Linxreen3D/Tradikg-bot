@@ -54,11 +54,13 @@ tradikg init | doctor [--network] | backup
 tradikg research run --source kraken|cache|synthetic [--symbols XBTEUR,ETHEUR] [--timeframe 1h]
 tradikg research report [--run-id N]
 tradikg ml train --source cache
-tradikg data fetch-kraken | import-kraken <ZIP> | fetch-ccxt | coverage   # historische Daten
+tradikg data fetch-kraken | fetch-kraken-full | import-kraken <ZIP> | fetch-ccxt | coverage | quality
 tradikg replay run [--no-holdout] [--quick] [--rules kraken] | report    # Walk-Forward-Replay
+tradikg sim --start 2025-01-01 [--mode trend|signals]                   # Schnelldurchlauf ab Datum
 tradikg paper run [--once] | replay --source cache | status | report [--day YYYY-MM-DD]
 tradikg paper kill [--release] | reset-halt --note "Prüfergebnis"
 tradikg kraken market-check | preflight | paper-trade | status   # Kraken-Pilot (Live gesperrt)
+tradikg live check | run | status | kill        # Echtgeld-Trendfolge, kleines Budget (docs/LIVE_START.md)
 tradikg sample-data | import-csv | fetch | backtest | runs        # Sprint-1-Backtesting
 ```
 
@@ -119,7 +121,7 @@ Ausführlich: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Historical Replay:
 
 | Baustein | Kraken-Annahme (`KRAKEN_SPOT_ASSUMED`, Research + Paper) | Krypto generisch (`CRYPTO_SPOT_DEFAULT`, Sprint-1-Backtest) | Aktien (`STOCK_NEOBROKER_DEFAULT`) |
 |---|---|---|---|
-| Kommission | 0,40 % Taker (Paper: Maker 0,25 % für TP-Limits) | 0,10 % vom Nennwert | 1,00 € fix pro Order |
+| Kommission | 0,80 % Taker (Paper: Maker 0,40 % für TP-Limits; Kraken-Pro-Stufe 1, Stand 17.10.2026) | 0,10 % vom Nennwert | 1,00 € fix pro Order |
 | Spread (gesamt) | 10 bps | 10 bps | 10 bps |
 | Slippage | 5 bps je Marktorder (Stop: 50 bps Annahme im Worst Case) | 5 bps | 5 bps |
 
