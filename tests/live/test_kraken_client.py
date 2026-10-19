@@ -177,3 +177,19 @@ def test_credentials_from_macos_keychain():
     assert creds.api_key == "k-from-keychain"
     with pytest.raises(CredentialsError, match="Schlüsselbund"):
         load_credentials({}, keychain=lambda account: None)
+
+
+def test_keychain_wins_and_env_is_the_fallback(capsys):
+    """Schlüsselbund zuerst. Env nur, wenn der Bund fehlt – und der Wert nie im Log."""
+    store = {"api-key": "from-chain", "api-secret": DOC_SECRET}
+    env = {"KRAKEN_API_KEY": "from-env", "KRAKEN_API_SECRET": DOC_SECRET}
+    assert load_credentials(env, keychain=store.get).api_key == "from-chain"
+
+    def broken(_account: str) -> str:
+        raise RuntimeError(f"bundle said {DOC_SECRET}")
+
+    creds = load_credentials(env, keychain=broken)
+    assert creds.api_key == "from-env"
+    captured = capsys.readouterr()
+    assert DOC_SECRET not in captured.out and DOC_SECRET not in captured.err
+    assert DOC_SECRET not in repr(creds)

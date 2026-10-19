@@ -149,6 +149,7 @@ class ExchangeOrder:
     parent_txid: str | None = None
     role: LegRole | None = None
     ambiguous: bool = False  # Paper: SL und TP in derselben Kerze, Reihenfolge unbekannt
+    opened_at: float | None = None  # Unix-Sekunden (Kraken ``opentm``); None = unbekannt
 
 
 @dataclass(frozen=True)

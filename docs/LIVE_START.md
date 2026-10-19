@@ -100,7 +100,7 @@ das beim nächsten Durchgang ab und verkauft nie mehr, als er selbst gekauft hat
   neue Käufe; Stops bei Kraken bleiben. Fehlt der Kurs oder das Guthaben, gibt es in diesem
   Durchgang keine neuen Käufe, Verkäufe und Stops laufen weiter. Details:
   `docs/STRATEGY_AUDIT.md`, Punkt B.
-- Budget fest 20 € (technisch höchstens 50 €), nur BTC/ETH, nur Spot, kein Hebel.
+- Budget fest 20 € (im Code hart auf 20 € gedeckelt, nicht anhebbar), nur BTC/ETH, nur Spot, kein Hebel.
 - Ohne laufenden Mac keine neuen Entscheidungen; der Stop bei Kraken schützt trotzdem.
 - Gebühren laut öffentlicher Kraken-Seite (Stufe 1); dein Konto kann abweichen.
 - Mindestorder BTC 0,00006 BTC (≈ 4,35 € bei 72.500 €): mit 10 € je Coin erst ab einem BTC-Kurs

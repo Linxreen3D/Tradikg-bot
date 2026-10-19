@@ -475,8 +475,8 @@ def test_daily_loss_config_is_off_by_default_and_cannot_loosen_past_10_percent()
     LiveTrendConfig(daily_loss_fraction=0.10)  # Obergrenze, nicht darüber
     with pytest.raises(LiveSafetyError, match="0.10"):
         LiveTrendConfig(daily_loss_fraction=0.11)
-    with pytest.raises(LiveSafetyError, match="50"):
-        LiveTrendConfig(budget_eur=50.01)
+    with pytest.raises(LiveSafetyError, match="20"):
+        LiveTrendConfig(budget_eur=20.01)
 
 
 def test_daily_loss_hit_blocks_buys_but_stop_and_sell_still_work(tmp_path):
@@ -1061,8 +1061,8 @@ def test_drawdown_config_is_off_by_default_and_cannot_loosen_past_45_percent():
     LiveTrendConfig(drawdown_fraction=0.30)
     with pytest.raises(LiveSafetyError, match="0.45"):
         LiveTrendConfig(drawdown_fraction=0.46)
-    with pytest.raises(LiveSafetyError, match="50"):
-        LiveTrendConfig(budget_eur=50.01, drawdown_enabled=True)
+    with pytest.raises(LiveSafetyError, match="20"):
+        LiveTrendConfig(budget_eur=20.01, drawdown_enabled=True)
 
 
 def test_drawdown_hit_blocks_buys_but_stop_and_sell_still_work(tmp_path):

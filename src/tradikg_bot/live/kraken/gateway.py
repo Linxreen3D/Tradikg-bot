@@ -98,6 +98,7 @@ def parse_order(txid: str, raw: dict[str, Any]) -> ExchangeOrder:
         avg_price=_f(raw.get("price")),
         fee=_f(raw.get("fee")),
         price=price,
+        opened_at=_f(raw["opentm"]) if raw.get("opentm") not in (None, "", 0, "0") else None,
     )
 
 
