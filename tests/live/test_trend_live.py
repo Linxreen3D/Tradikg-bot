@@ -14,7 +14,14 @@ from tradikg_bot.live.models import (
     OutcomeUnknownError,
     PairRules,
 )
-from tradikg_bot.live.trend_live import LiveSafetyError, LiveTrendConfig, LiveTrendRunner
+from tradikg_bot.live.trend_live import (
+    LIVE_SLICE_EUR,
+    MAX_BUDGET_EUR,
+    LiveSafetyError,
+    LiveTrendConfig,
+    LiveTrendRunner,
+    SymbolState,
+)
 
 RULES = {
     "XBTEUR": PairRules("XXBTZEUR", "XBTEUR", "XXBT", "ZEUR", 8, 1, 0.1, 0.00005, 0.5),
@@ -23,8 +30,9 @@ RULES = {
 
 
 class FakeKraken:
-    def __init__(self, eur: float = 20.0) -> None:
+    def __init__(self, eur: float = 20.0, held_eur: float = 0.0) -> None:
         self.bal = {"ZEUR": eur, "XXBT": 0.0, "XETH": 0.0}
+        self.held_eur = held_eur
         self.orders: dict[str, ExchangeOrder] = {}
         self.refs: dict[str, int] = {}
         self.params: dict[str, dict] = {}
@@ -41,7 +49,7 @@ class FakeKraken:
         return OrderBook(sym, [(p * 0.999, 1.0)], [(p * 1.001, 1.0)])
 
     def balances(self):
-        held = sum(
+        held = self.held_eur + sum(
             o.volume * (o.price or 0)
             for o in self.orders.values()
             if o.status == OrderStatus.OPEN and o.side == OrderSide.BUY
@@ -390,6 +398,133 @@ def test_timeout_while_cancelling_stop_leaves_a_stop_after_next_run(tmp_path):
     fake.cancel_order = real_cancel
     runner(tmp_path, fake, m).run_once()
     assert {o.pair for o in fake.open("stop-loss")} == {"XBTEUR", "ETHEUR"}
+
+
+def _buy_notional(fake: FakeKraken) -> float:
+    """EUR in offenen oder gefüllten eigenen Käufen. Stornierte Limits ohne Fill zählen nicht."""
+    total = 0.0
+    for order in fake.orders.values():
+        if order.side != OrderSide.BUY:
+            continue
+        if order.status == OrderStatus.CANCELED and order.filled == 0:
+            continue
+        volume = order.filled if order.filled else order.volume
+        price = order.avg_price or order.price or 0.0
+        total += volume * price
+    return total
+
+
+def test_slice_cap_rejects_above_20_and_keeps_max_budget_at_50():
+    assert MAX_BUDGET_EUR == 50.0
+    assert LIVE_SLICE_EUR == 20.0
+    assert LiveTrendConfig(budget_eur=20).own_slice_eur == 20
+    assert LiveTrendConfig(budget_eur=20).slot_eur == 10
+    for budget in (21, 50, 100):
+        with pytest.raises(LiveSafetyError):
+            LiveTrendConfig(budget_eur=budget)
+
+
+def test_hundred_eur_balance_never_buys_more_than_the_20_eur_slice(tmp_path):
+    fake, market = FakeKraken(eur=100.0), Market()
+    market.day(110)
+    bot = runner(tmp_path, fake, market)
+    bot.run_once()
+    buys = [o for o in fake.orders.values() if o.side == OrderSide.BUY]
+    assert len(buys) == 2
+    notionals = [o.volume * o.price for o in buys]
+    assert sum(notionals) <= 20.0
+    assert min(notionals) > 5  # zweite Coin bleibt bedient (keine Doppelzählung der Scheibe)
+    market.day(120)  # weiter über SMA: Fallback ersetzt das Limit, legt keine zweite Scheibe an
+    bot.run_once()
+    assert _buy_notional(fake) <= 20.0
+    assert 100.0 - fake.bal["ZEUR"] <= 20.0 + 1e-6
+
+
+def test_buy_sizes_from_available_not_from_account_total(tmp_path):
+    fake, market = FakeKraken(eur=100.0, held_eur=97.0), Market()
+    market.day(110)
+    runner(tmp_path, fake, market).run_once()
+    buys = [o for o in fake.orders.values() if o.side == OrderSide.BUY]
+    assert buys
+    assert sum(o.volume * o.price for o in buys) <= 3.0 + 1e-6
+
+
+def test_deployed_slice_is_not_refilled_from_the_rest_of_the_account(tmp_path):
+    fake, market = FakeKraken(eur=100.0), Market()
+    market.day(110)
+    fake.bal["XXBT"] = 0.18
+    bot = runner(tmp_path, fake, market)
+    bot.state.symbols["XBTEUR"] = SymbolState(units=0.18, entry_price=100.0, peak=100.0)
+    bot.run_once()
+    buys = [o for o in fake.orders.values() if o.side == OrderSide.BUY]
+    assert buys and {o.pair for o in buys} == {"ETHEUR"}
+    assert sum(o.volume * o.price for o in buys) <= 2.0 + 1e-6
+
+
+def test_buy_now_with_100_eur_stays_inside_the_slice(tmp_path):
+    fake, market = FakeKraken(eur=100.0), Market()
+    market.day(110)
+    runner(tmp_path, fake, market).buy_now()
+    assert _buy_notional(fake) <= 20.0
+    assert 100.0 - fake.bal["ZEUR"] <= 20.0 + 1e-6
+
+
+def test_withdrawal_permission_still_aborts_before_orders(tmp_path):
+    fake, market = FakeKraken(eur=100.0), Market()
+    market.day(110)
+    fake.withdraw = True
+    with pytest.raises(LiveSafetyError, match="Auszahlungsrechte"):
+        runner(tmp_path, fake, market).run_once()
+    assert not fake.orders
+
+
+def test_dry_run_on_100_eur_account_places_nothing(tmp_path, capsys):
+    import sys
+
+    lines: list[str] = []
+    fake, market = FakeKraken(eur=100.0), Market()
+    market.day(110)
+    bot = runner(tmp_path, fake, market, dry_run=True)
+    bot.log = lines.append
+    bot.run_once()
+    bot.run_once()  # gleicher Tag, kein zweiter Probekauf
+    assert not fake.orders
+    assert not (tmp_path / "state.json").exists()
+    buys = [p for p in fake.validated if p["type"] == "buy"]
+    notionals = [float(p["volume"]) * float(p["price"]) for p in buys]
+    assert len(buys) == 2
+    assert sum(notionals) <= 20.0
+    assert min(notionals) > 5
+    print("\n".join(lines))
+    print(
+        f"Konto 100 EUR, eigene Scheibe {LIVE_SLICE_EUR:.0f} EUR, "
+        f"geprüfte Käufe {sum(notionals):.4f} EUR, Orders {len(fake.orders)}, "
+        f"Zustand gespeichert: {(tmp_path / 'state.json').exists()}"
+    )
+    captured = capsys.readouterr()
+    assert "[PROBE]" in captured.out and "nicht ausgeführt" in captured.out
+    print(captured.out, file=sys.stderr)
+
+
+def test_cli_rejects_budget_above_slice_before_reading_credentials(tmp_path, monkeypatch, capsys):
+    import tradikg_bot.live.kraken.credentials as creds_mod
+    from tradikg_bot.cli import main
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path / "home"))
+    called: list[str] = []
+
+    def spy(*_args, **_kwargs):
+        called.append("loaded")
+        raise AssertionError("Zugangsdaten wurden trotz ungültigem Budget gelesen")
+
+    monkeypatch.setattr(creds_mod, "load_credentials", spy)
+    assert main(["live", "check", "--budget", "21"]) == 2
+    assert main(["live", "run", "--budget", "50", "--i-understand-this-uses-real-money"]) == 2
+    assert main(["live", "buy-now", "--budget", "100", "--i-understand-this-uses-real-money"]) == 2
+    assert called == []
+    out = capsys.readouterr().out
+    assert out.count("ABBRUCH") == 3
+    assert "20" in out
 
 
 def test_lost_state_file_never_buys_twice_while_bot_orders_are_open(tmp_path):

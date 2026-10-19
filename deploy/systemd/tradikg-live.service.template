@@ -1,0 +1,31 @@
+# Tradikg Echtgeld-Trendbot, systemd User-Unit.
+# Platzhalter ersetzt scripts/install_linux_live_unit.sh. Keine API-Schlüssel in diese Datei.
+# Der Dienst wird vom Installer nicht gestartet.
+#
+# Zustand und Kill-Switch liegen unter TRADIKG_HOME (nicht im Repository):
+#   __TRADIKG_HOME__/live/trend_state.json
+#   __TRADIKG_HOME__/live/KILL_SWITCH
+#   __TRADIKG_HOME__/live/live.log
+#   __TRADIKG_HOME__/live/live.lock
+#   __TRADIKG_HOME__/live/snapshot.json
+#   __TRADIKG_HOME__/live/journal.sqlite
+
+[Unit]
+Description=Tradikg live trend bot (own 20 EUR slice)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_DIR__
+Environment=TRADIKG_HOME=__TRADIKG_HOME__
+EnvironmentFile=__ENV_FILE__
+ExecStart=__VENV_DIR__/bin/tradikg live run --budget 20 --invest-fraction 1.0 --i-understand-this-uses-real-money
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=2
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

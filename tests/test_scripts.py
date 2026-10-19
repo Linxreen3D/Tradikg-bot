@@ -74,6 +74,66 @@ def test_launchd_templates_are_valid_plists(template):
     assert "live" not in args.split()
 
 
+def test_systemd_unit_caps_the_slice_and_carries_no_secrets():
+    text = (ROOT / "deploy" / "systemd" / "tradikg-live.service.template").read_text()
+    assert "EnvironmentFile=__ENV_FILE__" in text
+    assert "EnvironmentFile=-" not in text
+    assert "--budget 20" in text
+    assert "Restart=on-failure" in text
+    assert "RestartPreventExitStatus=2" in text
+    assert "TRADIKG_HOME=__TRADIKG_HOME__" in text
+    assert "KRAKEN_API_KEY=" not in text and "KRAKEN_API_SECRET=" not in text
+    assert "live run" in text
+
+
+def test_linux_unit_install_writes_unit_without_starting_or_copying_secrets(tmp_path):
+    script = ROOT / "scripts" / "install_linux_live_unit.sh"
+    text = script.read_text()
+    for line in text.splitlines():
+        assert "systemctl" not in line.split("#", 1)[0]
+    assert "rm -rf" not in text
+    secret = "TEST-ONLY-NOT-A-REAL-SECRET"
+    env_file = tmp_path / "outside" / "kraken.env"
+    env_file.parent.mkdir()
+    env_file.write_text(f"KRAKEN_API_KEY=test-key\nKRAKEN_API_SECRET={secret}\n")
+    env_file.chmod(0o600)
+    home = tmp_path / "home"
+    unit_root = tmp_path / "xdg"
+    base_env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(unit_root),
+        "TRADIKG_HOME": str(home / "tradikg"),
+        "TRADIKG_VENV": str(tmp_path / "venv"),
+    }
+    bad_mode = tmp_path / "open.env"
+    bad_mode.write_text("KRAKEN_API_KEY=x\n")
+    bad_mode.chmod(0o644)
+    refused = subprocess.run(
+        ["bash", str(script), str(bad_mode)], capture_output=True, text=True, env=base_env
+    )
+    assert refused.returncode != 0 and "0600" in refused.stderr
+    inside = subprocess.run(
+        ["bash", str(script), str(ROOT / "README.md")],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert inside.returncode != 0 and "Git" in inside.stderr
+    ok = subprocess.run(
+        ["bash", str(script), str(env_file)], capture_output=True, text=True, env=base_env
+    )
+    assert ok.returncode == 0, ok.stderr
+    unit = (unit_root / "systemd" / "user" / "tradikg-live.service").read_text()
+    assert secret not in unit and "test-key" not in unit
+    assert "__" not in unit
+    assert "--budget 20" in unit
+    assert f"EnvironmentFile={env_file.resolve()}" in unit
+    assert "RestartPreventExitStatus=2" in unit
+    assert "nicht gestartet" in ok.stdout
+    assert not (home / "tradikg" / "live" / "live.pid").exists()
+
+
 def test_check_environment_runs(tmp_path):
     out = subprocess.run(
         ["bash", str(ROOT / "scripts" / "check_environment.sh")],

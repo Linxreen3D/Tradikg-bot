@@ -53,6 +53,8 @@ def _runner(args: argparse.Namespace, dry_run: bool):
     from tradikg_bot.market.kraken_data import KrakenMarketData
     from tradikg_bot.storage import SQLiteStore
 
+    # Budget prüfen, bevor irgendwelche Zugangsdaten gelesen werden.
+    tcfg = LiveTrendConfig(budget_eur=args.budget, invest_fraction=args.invest_fraction)
     cfg = PlatformConfig.load(getattr(args, "platform_config", None))
     cfg.ensure_dirs()
     paths = _paths(cfg)
@@ -61,7 +63,6 @@ def _runner(args: argparse.Namespace, dry_run: bool):
         load_credentials(), nonce_source=journal.next_nonce, allow_trading=not dry_run
     )
     market = KrakenMarketData(KrakenClient(), SQLiteStore(cfg.market_db))
-    tcfg = LiveTrendConfig(budget_eur=args.budget, invest_fraction=args.invest_fraction)
 
     def closes(sym: str) -> pd.Series:
         market.update_cache(sym, "1d")  # nur abgeschlossene Tageskerzen
@@ -87,6 +88,9 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     try:
         runner, tcfg, _, log = _runner(args, dry_run=True)
+    except LiveSafetyError as exc:
+        print(f"ABBRUCH: {exc}")
+        return 2
     except CredentialsError as exc:
         print(f"Kein API-Key gefunden: {exc}\nSiehe docs/LIVE_START.md (Schlüsselbund).")
         return 2
@@ -109,13 +113,21 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    from tradikg_bot.live.kraken.credentials import CredentialsError
     from tradikg_bot.live.trend_live import LiveSafetyError
     from tradikg_bot.service.ops import AlreadyRunningError, InstanceLock
 
     if not args.confirm:
         print(f"Echtgeld! Start nur mit {CONFIRM_FLAG}. Vorher `tradikg live check` ausführen.")
         return 2
-    runner, tcfg, paths, log = _runner(args, dry_run=False)
+    try:
+        runner, tcfg, paths, log = _runner(args, dry_run=False)
+    except LiveSafetyError as exc:
+        print(f"ABBRUCH: {exc}")
+        return 2
+    except CredentialsError as exc:
+        print(f"Kein API-Key gefunden: {exc}")
+        return 2
     try:
         lock = InstanceLock(paths["lock"]).acquire()
     except AlreadyRunningError as exc:
@@ -146,13 +158,21 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_buy_now(args: argparse.Namespace) -> int:
     """Vom Nutzer ausgelöst: wartende Kauf-Limits sofort marktnah kaufen und Stop setzen."""
+    from tradikg_bot.live.kraken.credentials import CredentialsError
     from tradikg_bot.live.trend_live import LiveSafetyError
     from tradikg_bot.service.ops import AlreadyRunningError, InstanceLock
 
     if not args.confirm:
         print(f"Echtgeld! Sofortkauf nur mit {CONFIRM_FLAG}.")
         return 2
-    runner, _, paths, log = _runner(args, dry_run=False)
+    try:
+        runner, _, paths, log = _runner(args, dry_run=False)
+    except LiveSafetyError as exc:
+        print(f"ABBRUCH: {exc}")
+        return 2
+    except CredentialsError as exc:
+        print(f"Kein API-Key gefunden: {exc}")
+        return 2
     try:
         lock = InstanceLock(paths["lock"]).acquire()
     except AlreadyRunningError:
@@ -207,8 +227,15 @@ def register(sub: argparse._SubParsersAction) -> None:
     ls = live.add_subparsers(dest="live_cmd", required=True)
 
     def common(p: argparse.ArgumentParser) -> None:
+        from tradikg_bot.live.trend_live import LIVE_SLICE_EUR
+
         p.add_argument("--platform-config", help="Pfad zur Plattform-Konfiguration (TOML)")
-        p.add_argument("--budget", type=float, default=20.0, help="Budget in EUR (max. 50)")
+        p.add_argument(
+            "--budget",
+            type=float,
+            default=LIVE_SLICE_EUR,
+            help=f"Eigene EUR-Scheibe des Bots (höchstens {LIVE_SLICE_EUR:.0f})",
+        )
         p.add_argument("--invest-fraction", type=float, default=1.0)
 
     p = ls.add_parser("check", help="Probelauf: Kraken prüft Orders nur (validate)")

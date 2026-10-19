@@ -13,7 +13,10 @@ Gleiche Regel wie ``trading/allocation.py`` (Paper/Schnelldurchlauf), aber mit e
 * Nach ausgelöstem Stop erst wieder Einstieg nach neuem Kreuzen von unten.
 
 Sicherheit:
-* Budget hart gedeckelt (``MAX_BUDGET_EUR``); je Coin höchstens Budget × Anteil / Anzahl Coins.
+* Budget hart gedeckelt (``MAX_BUDGET_EUR`` bleibt 50 und wird nicht angehoben). Der Trend-Bot
+  handelt zusätzlich nur seine eigene Scheibe ``LIVE_SLICE_EUR`` (20 €), auch wenn das Konto
+  mehr Guthaben hat. Käufe nehmen ``min(Rest der Scheibe, frei verfügbares Guthaben)`` –
+  nie ``Balance.total``.
 * Der Bot handelt **nur seine eigenen Mengen** (aus seinen Orders), nie andere Bestände.
 * Jede Order trägt eine eindeutige ``userref``; bei unklarem Ergebnis wird nicht blind
   wiederholt, sondern bei Kraken nachgesehen.
@@ -37,6 +40,9 @@ from tradikg_bot.costs import KRAKEN_SPOT_TAKER
 from tradikg_bot.live.models import OrderRejectedError, OutcomeUnknownError
 
 MAX_BUDGET_EUR = 50.0
+# Eigene Scheibe des Trend-Bots. Das Konto darf mehr enthalten; darüber wird nicht disponiert.
+# MAX_BUDGET_EUR bleibt die unveränderte Obergrenze und wird hier nicht angehoben.
+LIVE_SLICE_EUR = 20.0
 KIND = {"buy": 1, "buy_fallback": 2, "stop": 3, "sell": 4, "sell_fallback": 5}
 
 
@@ -56,12 +62,21 @@ class LiveTrendConfig:
     def __post_init__(self) -> None:
         if not 0 < self.budget_eur <= MAX_BUDGET_EUR:
             raise LiveSafetyError(f"Budget muss in (0, {MAX_BUDGET_EUR:.0f}] € liegen")
+        if self.budget_eur > LIVE_SLICE_EUR:
+            raise LiveSafetyError(
+                f"Der Trend-Bot handelt nur seine eigene Scheibe von {LIVE_SLICE_EUR:.0f} €"
+            )
         if not 0 < self.invest_fraction <= 1:
             raise LiveSafetyError("invest_fraction muss in (0, 1] liegen")
 
     @property
+    def own_slice_eur(self) -> float:
+        """EUR, die dieser Bot einsetzen darf – nie mehr als die 20-€-Scheibe."""
+        return min(self.budget_eur * self.invest_fraction, LIVE_SLICE_EUR)
+
+    @property
     def slot_eur(self) -> float:
-        return self.budget_eur * self.invest_fraction / len(self.symbols)
+        return self.own_slice_eur / len(self.symbols)
 
 
 @dataclass
@@ -119,6 +134,7 @@ class LiveTrendRunner:
         self.snapshot_path = snapshot_path
         self._fresh = not state_path.exists()
         self.state = LiveState.load(state_path)
+        self._eur_used = 0.0
 
     # -- Kraken-Aufrufe ------------------------------------------------------------------------
     def _ref(self, day: str, sym: str, kind: str) -> int:
@@ -256,6 +272,7 @@ class LiveTrendRunner:
             )
         self._refuse_if_state_lost()
         balances = self.gw.balances()
+        self._eur_used = 0.0
         today = str(pd.Timestamp.now(tz="UTC").date())
         for sym in self.cfg.symbols:
             st = self.state.symbols.setdefault(sym, SymbolState())
@@ -272,14 +289,13 @@ class LiveTrendRunner:
                 st.buy_txid = None
                 balances = self.gw.balances()  # stornierte Limits geben das Geld wieder frei
             rules, book = self.gw.pair_rules(sym), self.gw.order_book(sym, 1)
-            eur_free = balances[rules.quote].available if rules.quote in balances else 0.0
-            eur = min(self.cfg.slot_eur - st.units * st.entry_price, eur_free)
+            balances = self.gw.balances()
+            eur = self._eur_for_new_buy(st, balances, rules.quote)
             price = rules.round_price_up(book.best_ask * 1.005)
             vol = rules.round_volume_down(eur / (price * (1 + KRAKEN_SPOT_TAKER)))
             if vol * price < max(rules.ordermin * price, rules.costmin):
                 self.log(f"[JETZT] {sym}: {eur:.2f} € reichen nicht für die Mindestorder")
                 continue
-            st.buy_eur = eur
             st.buy_txid = self._submit(
                 sym,
                 "buy_fallback",
@@ -292,6 +308,7 @@ class LiveTrendRunner:
                     "volume": rules.format_volume(vol),
                 },
             )
+            self._remember_buy(st, eur, st.buy_txid)
             self._save()
         balances = self.gw.balances()
         for sym in self.cfg.symbols:  # Ausführung übernehmen und sofort Stop bei Kraken setzen
@@ -388,11 +405,13 @@ class LiveTrendRunner:
             self._cancel_and_settle(sym, st, st.buy_txid, "Kauf-Limit nicht ausgeführt", buy=True)
             st.buy_txid = None
             remaining = st.buy_eur - st.units * st.entry_price
-            if above and remaining >= self.cfg.dust_eur and not self.kill.exists():
-                vol = rules.round_volume_down(
-                    remaining / (book.best_ask * 1.005 * (1 + KRAKEN_SPOT_TAKER))
-                )
-                st.buy_txid = self._submit(
+            # Nach dem Storno neu lesen: das frei gewordene Geld steht nicht im alten Snapshot.
+            balances = self.gw.balances()
+            eur = min(max(0.0, remaining), self._eur_for_new_buy(st, balances, rules.quote))
+            if above and eur >= self.cfg.dust_eur and not self.kill.exists():
+                price = rules.round_price_up(book.best_ask * 1.005)
+                vol = rules.round_volume_down(eur / (price * (1 + KRAKEN_SPOT_TAKER)))
+                txid = self._submit(
                     sym,
                     "buy_fallback",
                     day,
@@ -400,10 +419,12 @@ class LiveTrendRunner:
                         "type": "buy",
                         "ordertype": "limit",
                         "timeinforce": "IOC",
-                        "price": rules.format_price(rules.round_price_up(book.best_ask * 1.005)),
+                        "price": rules.format_price(price),
                         "volume": rules.format_volume(vol),
                     },
                 )
+                st.buy_txid = txid
+                self._remember_buy(st, eur, txid)
         if st.sell_txid:
             self._cancel_and_settle(
                 sym, st, st.sell_txid, "Verkauf-Limit nicht ausgeführt", buy=False
@@ -447,11 +468,55 @@ class LiveTrendRunner:
                 self._buy(sym, st, day, close, book, rules, balances)
         st.last_candle = day
 
-    def _buy(self, sym, st, day, close, book, rules, balances) -> None:
-        eur_free = (
-            balances[rules.quote].available if rules.quote in balances else 0.0
-        ) - self._eur_used
-        eur = min(self.cfg.slot_eur, eur_free)
+    def _position_cost(self, st: SymbolState) -> float:
+        return max(0.0, st.units) * max(st.entry_price, 0.0)
+
+    def _deployed_eur(self) -> float:
+        """Eigene Scheibe, die schon in Positionen oder offenen Käufen steckt.
+
+        ``buy_eur`` zählt nur bei einer noch offenen Order. Nach dem Fill steht derselbe
+        Betrag in ``units * entry_price``; beides zusammen wäre doppelt.
+        """
+        total = 0.0
+        for st in self.state.symbols.values():
+            total += self._position_cost(st)
+            if st.buy_txid:
+                total += max(0.0, st.buy_eur)
+        return total
+
+    def _eur_for_new_buy(self, st: SymbolState, balances, quote: str) -> float:
+        """EUR für einen neuen Kauf: min(Rest im Coin-Slot, Rest der 20-€-Scheibe, verfügbar).
+
+        ``balances[quote].available`` ist frei (total − in Orders gebunden). ``Balance.total``
+        wird nicht verwendet – ein 100-€-Konto gibt dem Bot keine größere Order.
+        """
+        bal = balances.get(quote) if balances else None
+        available = bal.available if bal is not None else 0.0
+        # Probelauf reserviert bei der Börse nichts. Echte Orders stecken schon in ``available``.
+        if self.dry_run:
+            available -= self._eur_used
+        symbol_left = self.cfg.slot_eur - self._position_cost(st)
+        if st.buy_txid:
+            symbol_left -= max(0.0, st.buy_eur)
+        untracked = self._eur_used
+        if not self.dry_run:
+            for other in self.state.symbols.values():
+                if other.buy_txid:
+                    untracked -= max(0.0, other.buy_eur)
+            untracked = max(0.0, untracked)
+        slice_left = self.cfg.own_slice_eur - self._deployed_eur() - untracked
+        return max(0.0, min(symbol_left, slice_left, available))
+
+    def _remember_buy(self, st: SymbolState, eur: float, txid: str | None) -> None:
+        """Reservierung nur zählen, wenn die Order existiert oder der Probelauf sie geprüft hat."""
+        if txid or self.dry_run:
+            st.buy_eur = eur
+            self._eur_used += eur
+
+    def _buy(self, sym, st, day, close, book, rules, _balances) -> None:
+        # Frisch lesen: der Snapshot vom Durchgangsstart kennt Orders aus diesem Umlauf nicht.
+        balances = self.gw.balances()
+        eur = self._eur_for_new_buy(st, balances, rules.quote)
         price = rules.round_price_down(min(close, book.best_bid))
         vol = rules.round_volume_down(eur / (price * (1 + KRAKEN_SPOT_TAKER)))
         need = max(rules.ordermin * price, rules.costmin)
@@ -461,8 +526,6 @@ class LiveTrendRunner:
                 f"Mindestorder {need:.2f} €"
             )
             return
-        st.buy_eur = eur
-        self._eur_used += eur
         st.buy_txid = self._submit(
             sym,
             "buy",
@@ -475,7 +538,9 @@ class LiveTrendRunner:
                 "volume": rules.format_volume(vol),
             },
         )
-        st.buy_day = day
+        self._remember_buy(st, eur, st.buy_txid)
+        if st.buy_txid or self.dry_run:
+            st.buy_day = day
 
     def _ensure_stop(self, sym: str, st: SymbolState) -> None:
         """Notfall-Stop bei Kraken setzen bzw. nachziehen (nur für eigene Menge)."""

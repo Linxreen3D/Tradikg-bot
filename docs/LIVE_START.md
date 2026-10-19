@@ -5,6 +5,9 @@ Notfall-Stop 20 % unter dem Höchststand **direkt bei Kraken**). Keine Anlageber
 einsetzen, dessen Verlust du verkraften kannst. Im schlechtesten Jahr seit 2019 hätte die Regel bei
 100 % Investitionsgrad rund −30 % verloren (bei 20 € ≈ −6 €).
 
+Auf einem Linux-Rechner läuft derselbe Bot als systemd-User-Unit, nicht über launchd.
+Dafür zuerst `docs/LINUX_LIVE.md` lesen und `tradikg live check` ausführen (prüft nur, kauft nichts).
+
 ## 1. Kraken vorbereiten (du)
 
 1. 20 € auf dein Kraken-Konto einzahlen (EUR-Guthaben).
@@ -77,7 +80,8 @@ das beim nächsten Durchgang ab und verkauft nie mehr, als er selbst gekauft hat
   Kurslücke im Extremfall ≈ 37 % (gemessen: ETH-Flash-Crash 02.08.2020). Vom Nutzer am 18.10.2026
   bewusst so gewählt (100 % investiert). **Die 10-%-Tagesverlust-Grenze gilt nicht für die
   Trendfolge**, nur für den Signal-/Bracket-Bot. Details: `docs/STRATEGY_AUDIT.md`, Punkt 1.
-- Budget fest 20 € (technisch höchstens 50 €), nur BTC/ETH, nur Spot, kein Hebel.
+- Budget fest 20 €. Der Bot nimmt nur diese eigene Scheibe, auch wenn auf dem Konto mehr
+  liegt. Ein Budget über 20 € wird abgelehnt. Nur BTC/ETH, nur Spot, kein Hebel.
 - Ohne laufenden Mac keine neuen Entscheidungen; der Stop bei Kraken schützt trotzdem.
 - Gebühren laut öffentlicher Kraken-Seite (Stufe 1); dein Konto kann abweichen.
 - Mindestorder BTC 0,00006 BTC (≈ 4,35 € bei 72.500 €): mit 10 € je Coin erst ab einem BTC-Kurs

@@ -156,15 +156,19 @@ def test_credentials_file_must_be_private_and_outside_git(tmp_path):
     path = tmp_path / "kraken.json"
     path.write_text(json.dumps({"api_key": "k", "api_secret": DOC_SECRET}))
     env = {"TRADIKG_KRAKEN_CREDENTIALS": str(path)}
+
+    def empty(_account):
+        return None
+
     if os.name == "posix":
         path.chmod(0o644)
         with pytest.raises(CredentialsError, match="lesbar"):
-            load_credentials(env)
+            load_credentials(env, keychain=empty)
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    assert load_credentials(env).api_key == "k"
+    assert load_credentials(env, keychain=empty).api_key == "k"
     (tmp_path / ".git").mkdir()
     with pytest.raises(CredentialsError, match="Git"):
-        load_credentials(env)
+        load_credentials(env, keychain=empty)
 
 
 def test_doc_secret_is_valid_base64():
@@ -177,3 +181,42 @@ def test_credentials_from_macos_keychain():
     assert creds.api_key == "k-from-keychain"
     with pytest.raises(CredentialsError, match="Schlüsselbund"):
         load_credentials({}, keychain=lambda account: None)
+
+
+def test_env_is_fallback_and_keychain_wins_without_leaking_secrets(tmp_path, monkeypatch):
+    import tradikg_bot.live.kraken.credentials as creds_mod
+
+    env = {"KRAKEN_API_KEY": "from-env", "KRAKEN_API_SECRET": DOC_SECRET}
+    creds = load_credentials(env, keychain=lambda account: None)
+    assert creds.api_key == "from-env"
+    assert DOC_SECRET not in repr(creds)
+
+    path = tmp_path / "kraken.json"
+    path.write_text(json.dumps({"api_key": "from-file", "api_secret": DOC_SECRET}))
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    both = {**env, "TRADIKG_KRAKEN_CREDENTIALS": str(path)}
+    chain = {"api-key": "from-chain", "api-secret": DOC_SECRET}
+    assert load_credentials(both, keychain=chain.get).api_key == "from-chain"
+
+    def incomplete(account):
+        return "PARTIAL-KEY-VALUE" if account == "api-key" else None
+
+    with pytest.raises(CredentialsError, match="unvollständig") as exc:
+        load_credentials(both, keychain=incomplete)
+    text = str(exc.value)
+    assert "PARTIAL-KEY-VALUE" not in text
+    assert DOC_SECRET not in text
+    assert "from-env" not in text and "from-file" not in text
+
+    monkeypatch.setattr(creds_mod.sys, "platform", "linux")
+
+    def boom(_account):
+        raise AssertionError("Schlüsselbund auf Linux aufgerufen")
+
+    monkeypatch.setattr(creds_mod, "_keychain_lookup", boom)
+    assert load_credentials(env).api_key == "from-env"
+
+    monkeypatch.setattr(creds_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(creds_mod, "_keychain_lookup", chain.get)
+    assert load_credentials(env).api_key == "from-chain"
+    assert DOC_SECRET not in repr(load_credentials(env))
