@@ -91,11 +91,24 @@ class PaperService:
         if cfg.strategy_mode == "trend":
             from tradikg_bot.trading.allocation import TrendConfig, TrendPaperEngine
 
-            tcfg = TrendConfig(invest_fraction=cfg.invest_fraction, cash_yield_pa=cfg.cash_yield_pa)
+            tcfg = TrendConfig(
+                invest_fraction=cfg.invest_fraction,
+                cash_yield_pa=cfg.cash_yield_pa,
+                daily_loss_enabled=cfg.daily_loss_enabled,
+                daily_loss_fraction=cfg.daily_loss_fraction,
+                daily_loss_timezone=cfg.daily_loss_timezone,
+            )
             self.engine = TrendPaperEngine(
                 PaperPaths(cfg.paper_dir), rules, cfg.capital_eur, cfg.timeframe, cfg.tax_rate, tcfg
             )
             self.log.info("Modus: Trendfolge-Allokation (SMA 200) für %s", self.symbols)
+            if tcfg.daily_loss_enabled:
+                self.log.info(
+                    "Tagesverlustgrenze an: %.0f%% der Equity zum Tagesbeginn, Reset 00:00 %s "
+                    "(nur neue Käufe, keine Zwangsverkäufe)",
+                    tcfg.daily_loss_fraction * 100,
+                    tcfg.daily_loss_timezone,
+                )
             return
         stats = self.research.oos_stats()
         if not stats:

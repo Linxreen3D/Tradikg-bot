@@ -19,12 +19,18 @@ Sicherheit:
   wiederholt, sondern bei Kraken nachgesehen.
 * Abbruch, wenn der API-Key Auszahlungsrechte hat oder Margin-Positionen existieren.
 * Kill-Switch-Datei: keine neuen Käufe, Stops bleiben aktiv.
+* Optionale Tagesverlustgrenze (standardmäßig **aus**): Equity = EUR-Guthaben plus
+  Marktpreis der eigenen Mengen, gegen die Equity zum Beginn des Wiener Tages
+  (00:00 Europe/Vienna). Standard 5 %, höchstens 10 %. Ist sie gerissen, gibt es
+  keine neuen Käufe bis zum nächsten Wiener Tag. Verkäufe und die Stop-Orders bei
+  Kraken laufen unverändert weiter. Es wird nichts zwangsverkauft.
 * ``dry_run``: Kraken prüft jede Order nur (``validate=true``), nichts wird ausgeführt oder
   gespeichert.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -35,6 +41,12 @@ import pandas as pd
 
 from tradikg_bot.costs import KRAKEN_SPOT_TAKER
 from tradikg_bot.live.models import OrderRejectedError, OutcomeUnknownError
+from tradikg_bot.risk.limits import (
+    TREND_DAILY_LOSS_FRACTION,
+    TREND_DAILY_LOSS_TIMEZONE,
+    DailyLossGuard,
+    validate_trend_daily_loss,
+)
 
 MAX_BUDGET_EUR = 50.0
 KIND = {"buy": 1, "buy_fallback": 2, "stop": 3, "sell": 4, "sell_fallback": 5}
@@ -52,12 +64,21 @@ class LiveTrendConfig:
     sma: int = 200
     stop_frac: float = 0.20
     dust_eur: float = 0.50  # Restmengen darunter gelten als „keine Position“
+    # Tagesverlustgrenze. Im Echtbetrieb aus, bis sie bewusst eingeschaltet wird.
+    # 5 % von ~20 € begrenzen einen schlechten Tag auf etwa 1 €; höchstens 10 %.
+    daily_loss_enabled: bool = False
+    daily_loss_fraction: float = TREND_DAILY_LOSS_FRACTION
+    daily_loss_timezone: str = TREND_DAILY_LOSS_TIMEZONE
 
     def __post_init__(self) -> None:
         if not 0 < self.budget_eur <= MAX_BUDGET_EUR:
             raise LiveSafetyError(f"Budget muss in (0, {MAX_BUDGET_EUR:.0f}] € liegen")
         if not 0 < self.invest_fraction <= 1:
             raise LiveSafetyError("invest_fraction muss in (0, 1] liegen")
+        try:
+            validate_trend_daily_loss(self.daily_loss_fraction, self.daily_loss_timezone)
+        except ValueError as exc:
+            raise LiveSafetyError(str(exc)) from exc
 
     @property
     def slot_eur(self) -> float:
@@ -85,20 +106,26 @@ class SymbolState:
 @dataclass
 class LiveState:
     symbols: dict[str, SymbolState] = field(default_factory=dict)
+    # Nur gesetzt, wenn die Tagesverlustgrenze an ist. Sonst fehlt der Schlüssel in der Datei.
+    daily_loss: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, path: Path) -> LiveState:
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text())
-        return cls({s: SymbolState(**v) for s, v in raw.get("symbols", {}).items()})
+        return cls(
+            {s: SymbolState(**v) for s, v in raw.get("symbols", {}).items()},
+            raw.get("daily_loss"),
+        )
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {"symbols": {s: asdict(v) for s, v in self.symbols.items()}}
+        if self.daily_loss is not None:
+            payload["daily_loss"] = self.daily_loss
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps({"symbols": {s: asdict(v) for s, v in self.symbols.items()}}, indent=2)
-        )
+        tmp.write_text(json.dumps(payload, indent=2))
         tmp.replace(path)  # atomar
 
 
@@ -113,12 +140,22 @@ class LiveTrendRunner:
         dry_run: bool = True,
         log: Callable[[str], None] = print,
         snapshot_path: Path | None = None,
+        now: Callable[[], dt.datetime] | None = None,
     ) -> None:
         self.gw, self.cfg, self.closes, self.kill = gateway, cfg, closes, kill_switch
         self.state_path, self.dry_run, self.log = state_path, dry_run, log
         self.snapshot_path = snapshot_path
+        self.now = now or (lambda: dt.datetime.now(dt.UTC))
         self._fresh = not state_path.exists()
         self.state = LiveState.load(state_path)
+        # Aus: kein Guard, keine Zustandsänderung. An: Referenz und Sperre überleben Neustarts.
+        self.guard: DailyLossGuard | None = None
+        if cfg.daily_loss_enabled:
+            self.guard = DailyLossGuard.restore(
+                self.state.daily_loss,
+                limit=cfg.daily_loss_fraction,
+                timezone=cfg.daily_loss_timezone,
+            )
 
     # -- Kraken-Aufrufe ------------------------------------------------------------------------
     def _ref(self, day: str, sym: str, kind: str) -> int:
@@ -200,6 +237,72 @@ class LiveTrendRunner:
             )
         self._fresh = False
 
+    # -- Tagesverlustgrenze --------------------------------------------------------------------
+    def _now(self) -> dt.datetime:
+        now = self.now()
+        if now.tzinfo is None:
+            return now.replace(tzinfo=dt.UTC)
+        return now
+
+    def _mark(self, sym: str, fallback: float) -> float:
+        """Verkaufsseite (Bid): unrealisierte Verluste zählen konservativ."""
+        try:
+            bid = self.gw.order_book(sym, 1).best_bid
+        except Exception:
+            return fallback
+        return float(bid) if bid else fallback
+
+    def _account_equity(self) -> float:
+        """EUR-Guthaben plus Marktpreis der eigenen Mengen (realisiert steckt im Cash)."""
+        balances = self.gw.balances()
+        quote = "ZEUR"
+        if self.cfg.symbols:
+            quote = self.gw.pair_rules(self.cfg.symbols[0]).quote
+        cash = balances[quote].total if quote in balances else 0.0
+        marked = 0.0
+        for sym, st in self.state.symbols.items():
+            if st.units <= 0:
+                continue
+            marked += st.units * self._mark(sym, st.entry_price)
+        return cash + marked
+
+    def _poll_daily_loss(self) -> None:
+        """Aktualisiert die Tagesreferenz. Ausgeschaltet: kein Aufruf, kein Effekt."""
+        if self.guard is None:
+            return
+        equity = self._account_equity()
+        previous_day = self.guard.current_day
+        breached = self.guard.observe(self._now(), equity)
+        self.state.daily_loss = self.guard.snapshot()
+        tz = self.cfg.daily_loss_timezone
+        if previous_day is not None and self.guard.current_day != previous_day:
+            self.log(
+                f"[TAGESLIMIT] Neuer Tag {self.guard.current_day} ({tz}): "
+                f"Start-Equity {self.guard.day_start_equity:.2f} €, "
+                f"Grenze {self.guard.floor:.2f} € ({self.cfg.daily_loss_fraction:.0%}). "
+                "Neue Käufe sind wieder erlaubt, solange diese Grenze hält."
+            )
+        if breached:
+            base = self.guard.day_start_equity
+            pnl = equity - base
+            pct = pnl / base if base else 0.0
+            self.log(
+                f"[TAGESLIMIT] Tagesverlust {pnl:.2f} € ({pct:.1%} von {base:.2f} € "
+                f"Start-Equity) erreicht die Grenze von {self.cfg.daily_loss_fraction:.0%}. "
+                f"Keine neuen Käufe bis 00:00 {tz}. "
+                "Verkäufe und Kraken-Stops laufen weiter."
+            )
+
+    def _daily_loss_blocks(self, sym: str) -> bool:
+        if self.guard is None or not self.guard.halted:
+            return False
+        self.log(
+            f"[TAGESLIMIT] {sym}: keine neuen Käufe "
+            f"(Tagesverlustgrenze {self.cfg.daily_loss_fraction:.0%} seit "
+            f"{self.guard.day_start_equity:.2f} €, bis 00:00 {self.cfg.daily_loss_timezone})"
+        )
+        return True
+
     # -- ein Durchgang -------------------------------------------------------------------------
     def run_once(self) -> LiveState:
         if self.gw.has_withdrawal_permission():
@@ -214,6 +317,7 @@ class LiveTrendRunner:
         for sym in self.cfg.symbols:
             st = self.state.symbols.setdefault(sym, SymbolState())
             self._sync(sym, st, balances)
+            self._poll_daily_loss()
             closes = self.closes(sym)
             if len(closes) >= self.cfg.sma:
                 self._decide(sym, st, closes, balances)
@@ -256,16 +360,19 @@ class LiveTrendRunner:
             )
         self._refuse_if_state_lost()
         balances = self.gw.balances()
-        today = str(pd.Timestamp.now(tz="UTC").date())
+        today = self._now().date().isoformat()
         for sym in self.cfg.symbols:
             st = self.state.symbols.setdefault(sym, SymbolState())
             self._sync(sym, st, balances)
+            self._poll_daily_loss()
             closes = self.closes(sym)
             above = len(closes) >= self.cfg.sma and float(closes.iloc[-1]) > float(
                 closes.iloc[-self.cfg.sma :].mean()
             )
             if st.units > 0 or not above or st.blocked or self.kill.exists():
                 self.log(f"[JETZT] {sym}: kein Sofortkauf (gekauft, Abwärtstrend, Sperre, Kill)")
+                continue
+            if self._daily_loss_blocks(sym):
                 continue
             if st.buy_txid:
                 self._cancel_and_settle(sym, st, st.buy_txid, "Sofortkauf statt Limit", buy=True)
@@ -388,7 +495,12 @@ class LiveTrendRunner:
             self._cancel_and_settle(sym, st, st.buy_txid, "Kauf-Limit nicht ausgeführt", buy=True)
             st.buy_txid = None
             remaining = st.buy_eur - st.units * st.entry_price
-            if above and remaining >= self.cfg.dust_eur and not self.kill.exists():
+            if (
+                above
+                and remaining >= self.cfg.dust_eur
+                and not self.kill.exists()
+                and not self._daily_loss_blocks(sym)
+            ):
                 vol = rules.round_volume_down(
                     remaining / (book.best_ask * 1.005 * (1 + KRAKEN_SPOT_TAKER))
                 )
@@ -443,6 +555,8 @@ class LiveTrendRunner:
         elif above and not st.blocked and not st.buy_txid:
             if self.kill.exists():
                 self.log(f"[KILL] {sym}: keine neuen Käufe (Kill Switch)")
+            elif self._daily_loss_blocks(sym):
+                pass  # bereits protokolliert; Verkäufe und Stops oben laufen weiter
             else:
                 self._buy(sym, st, day, close, book, rules, balances)
         st.last_candle = day

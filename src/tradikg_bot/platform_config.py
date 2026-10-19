@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Any
 
 from tradikg_bot.config import LiveTradingNotAllowedError, _reject_secrets
+from tradikg_bot.risk.limits import (
+    TREND_DAILY_LOSS_FRACTION,
+    TREND_DAILY_LOSS_TIMEZONE,
+    validate_trend_daily_loss,
+)
 
 DEFAULT_HOME = Path("~/.tradikg")
 
@@ -43,6 +48,10 @@ class PlatformConfig:
     strategy_mode: str = "signals"  # signals = Bracket, trend = 200-Tage-Allokation, grid = Netz
     invest_fraction: float = 1.0  # trend: höchstens investierter Kapitalanteil (Risikoregler)
     cash_yield_pa: float = 0.0  # trend: Zins auf Cash, nur wenn er tatsächlich gezahlt wird
+    # Trend-Tagesverlustgrenze. Aus = bisheriges Verhalten. Höchstens 10 %, Standard 5 %.
+    daily_loss_enabled: bool = False
+    daily_loss_fraction: float = TREND_DAILY_LOSS_FRACTION
+    daily_loss_timezone: str = TREND_DAILY_LOSS_TIMEZONE
     home: Path = field(default=DEFAULT_HOME)
 
     def __post_init__(self) -> None:
@@ -60,6 +69,7 @@ class PlatformConfig:
             raise ValueError("capital_eur muss > 0 sein")
         if not 0 <= self.tax_rate < 1:
             raise ValueError("tax_rate muss in [0, 1) liegen")
+        validate_trend_daily_loss(self.daily_loss_fraction, self.daily_loss_timezone)
         object.__setattr__(self, "home", Path(self.home).expanduser())
 
     # -- Pfade -------------------------------------------------------------------------------
@@ -164,4 +174,7 @@ local_llm_enabled = false   # optional, nicht implementiert
 strategy_mode = "signals"   # "trend" = 200-Tage-Allokation (für 1d gedacht)
 invest_fraction = 1.0       # trend: max. investierter Anteil (0.5 = halbes Risiko)
 cash_yield_pa = 0.0         # trend: Zins auf Cash (nur wenn real gezahlt)
+daily_loss_enabled = false  # trend: Tagesverlustgrenze (5 %, 00:00 Europe/Vienna). Aus = wie bisher
+daily_loss_fraction = 0.05  # höchstens 0.10, nur enger. ~1 € an einem 20-€-Konto
+daily_loss_timezone = "Europe/Vienna"
 """
