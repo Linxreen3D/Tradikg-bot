@@ -125,3 +125,123 @@ class DailyLossGuard:
         guard.halted = bool(data.get("halted"))
         guard.halted_days = [dt.date.fromisoformat(str(d)) for d in data.get("halted_days") or []]
         return guard
+
+
+# Drawdown vom Höchststand der Bot-Equity. −30 % hätte den Trend 2019 beendet,
+# deshalb liegt die weiteste erlaubte Schwelle bei 45 %. Nur enger einstellbar.
+TREND_DRAWDOWN_FRACTION = 0.45
+DRAWDOWN_HALT_NAME = "DRAWDOWN_HALT"
+
+
+def validate_trend_drawdown(fraction: float) -> None:
+    """Höchstens 45 % unter dem Höchststand. Ein weiterer Wert wird abgelehnt."""
+    if not 0 < fraction <= TREND_DRAWDOWN_FRACTION:
+        raise ValueError(
+            "drawdown_fraction muss in (0, 0.45] liegen "
+            "(höchstens 45 % unter dem Höchststand der Equity, nur enger einstellbar)"
+        )
+
+
+def format_drawdown_banner(info: dict[str, Any] | None) -> str:
+    """Eine Zeile für Snapshot-Dashboard. Leer, wenn der Bot noch keinen Stand geschrieben hat."""
+    if not info:
+        return ""
+    if not info.get("enabled"):
+        return "Drawdown-Sperre: aus"
+    peak = float(info.get("peak_equity") or 0.0)
+    equity = float(info.get("equity") or 0.0)
+    limit = float(info.get("limit") or TREND_DRAWDOWN_FRACTION)
+    dd = abs(float(info.get("drawdown") or 0.0))
+    if info.get("halted"):
+        return (
+            f"DRAWDOWN-SPERRE aktiv: Equity {equity:.2f} € ist {dd:.0%} unter dem Höchststand "
+            f"{peak:.2f} € (Grenze −{limit:.0%}). Keine neuen Käufe. "
+            "Lösen nur mit `tradikg live drawdown-reset`. "
+            "DRAWDOWN_HALT ist nur ein Hinweis; Löschen hebt die Sperre nicht auf. "
+            "Verkäufe und Kraken-Stops laufen weiter."
+        )
+    return (
+        f"Drawdown {dd:.1%} vom Höchststand {peak:.2f} € "
+        f"(Grenze −{limit:.0%}, Equity {equity:.2f} €). Sperre aus."
+    )
+
+
+@dataclass
+class DrawdownGuard:
+    """Sperrt neue Käufe, wenn die Equity ``limit`` unter ihren Höchststand fällt.
+
+    Die Sperre löst sich nicht von selbst, auch nicht bei Erholung oder an einem
+    neuen Tag. ``reset`` merkt eine Lösung vor; der nächste ``observe`` setzt den
+    Höchststand auf die dann gesehene Equity. Es wird nichts verkauft.
+    """
+
+    limit: float = TREND_DRAWDOWN_FRACTION
+    peak_equity: float = 0.0
+    halted: bool = False
+    rebase: bool = False
+    peak_at: str | None = None
+    halted_at: str | None = None
+
+    @property
+    def floor(self) -> float:
+        return self.peak_equity * (1 - self.limit)
+
+    def drawdown_from(self, equity: float) -> float:
+        if self.peak_equity <= 0:
+            return 0.0
+        return equity / self.peak_equity - 1.0
+
+    def observe(self, equity: float, now: dt.datetime | None = None) -> bool:
+        """Zieht den Höchststand nach. True, wenn die Sperre *jetzt* neu einrastet.
+
+        Nach ``reset`` wird der Höchststand auf ``equity`` gesetzt und diese
+        Beobachtung löst nicht aus.
+        """
+        stamp = now.isoformat() if now is not None else None
+        if self.rebase:
+            self.peak_equity = max(0.0, equity)
+            self.peak_at = stamp
+            self.halted = False
+            self.halted_at = None
+            self.rebase = False
+            return False
+        if self.peak_equity <= 0:
+            self.peak_equity = max(0.0, equity)
+            self.peak_at = stamp
+            return False
+        if not self.halted and equity > self.peak_equity:
+            self.peak_equity = equity
+            self.peak_at = stamp
+        if not self.halted and equity <= self.floor:
+            self.halted = True
+            self.halted_at = stamp
+            return True
+        return False
+
+    def reset(self) -> None:
+        """Manuelle Lösung. Der nächste ``observe`` setzt den Höchststand neu."""
+        self.halted = False
+        self.halted_at = None
+        self.rebase = True
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "limit": self.limit,
+            "peak_equity": self.peak_equity,
+            "halted": self.halted,
+            "rebase": self.rebase,
+            "peak_at": self.peak_at,
+            "halted_at": self.halted_at,
+        }
+
+    @classmethod
+    def restore(cls, data: dict[str, Any] | None, *, limit: float) -> DrawdownGuard:
+        guard = cls(limit=limit)
+        if not data:
+            return guard
+        guard.peak_equity = float(data.get("peak_equity") or 0.0)
+        guard.halted = bool(data.get("halted"))
+        guard.rebase = bool(data.get("rebase"))
+        guard.peak_at = data.get("peak_at")
+        guard.halted_at = data.get("halted_at")
+        return guard

@@ -179,6 +179,24 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"Kill Switch: {'AKTIV' if paths['kill'].exists() else 'aus'}")
     if not st.symbols:
         print("Noch kein Echtbetrieb gelaufen.")
+    dd = st.drawdown
+    flag = paths["state"].parent / "DRAWDOWN_HALT"
+    if dd and dd.get("halted"):
+        print(
+            f"Drawdown-Sperre: AKTIV (Höchststand {float(dd.get('peak_equity') or 0):.2f} €, "
+            f"Grenze −{float(dd.get('limit') or 0):.0%}). "
+            "Neue Käufe aus. Lösen: tradikg live drawdown-reset"
+        )
+    elif flag.exists():
+        print(
+            "Hinweisdatei DRAWDOWN_HALT liegt, ohne aktive Sperre in der Zustandsdatei. "
+            "Sie blockiert keine Käufe. Lösen einer echten Sperre: tradikg live drawdown-reset"
+        )
+    elif dd:
+        print(
+            f"Drawdown-Sperre: nicht ausgelöst (Höchststand "
+            f"{float(dd.get('peak_equity') or 0):.2f} €)"
+        )
     for sym, s in st.symbols.items():
         print(
             f"{sym}: Menge {s.units:.8f} zu Ø {s.entry_price:.2f} | Stop {s.stop_price:.2f} "
@@ -200,6 +218,22 @@ def cmd_kill(args: argparse.Namespace) -> int:
     else:
         kill.touch()
         print("Kill Switch AKTIV – keine neuen Käufe. Stops bei Kraken bleiben bestehen.")
+    return 0
+
+
+def cmd_drawdown_reset(args: argparse.Namespace) -> int:
+    """Drawdown-Sperre lösen. Kill-Switch, Stops und Budget bleiben wie sie sind."""
+    from tradikg_bot.live.trend_live import release_drawdown_halt
+
+    cfg = PlatformConfig.load(getattr(args, "platform_config", None))
+    state = _paths(cfg)["state"]
+    release_drawdown_halt(state)
+    print(
+        "Drawdown-Sperre gelöst. Der nächste Durchgang setzt den Höchststand auf die "
+        "aktuelle Equity. Es wird nichts verkauft; Stops bei Kraken bleiben. "
+        "Die Kill-Switch-Datei ist unverändert. "
+        f"(Datei {state.parent / 'DRAWDOWN_HALT'} entfernt, falls sie lag.)"
+    )
     return 0
 
 
@@ -231,3 +265,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--platform-config")
     p.add_argument("--release", action="store_true")
     p.set_defaults(func=cmd_kill, platform_cmd=True)
+    p = ls.add_parser(
+        "drawdown-reset",
+        help="Drawdown-Sperre lösen (nicht der Kill Switch; Stops bleiben)",
+    )
+    p.add_argument("--platform-config")
+    p.set_defaults(func=cmd_drawdown_reset, platform_cmd=True)

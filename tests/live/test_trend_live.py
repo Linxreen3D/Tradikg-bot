@@ -645,3 +645,260 @@ def test_lost_state_file_never_buys_twice_while_bot_orders_are_open(tmp_path):
     with pytest.raises(LiveSafetyError, match="Zustand"):
         runner(tmp_path, fake, m).run_once()
     assert not [o for o in fake.open() if o.side == OrderSide.BUY]
+
+
+def _dd_cfg(**overrides):
+    params = dict(
+        budget_eur=20.0,
+        invest_fraction=1.0,
+        sma=3,
+        stop_frac=0.20,
+        drawdown_enabled=True,
+        drawdown_fraction=0.45,
+    )
+    params.update(overrides)
+    return LiveTrendConfig(**params)
+
+
+def _btc_with_drawdown(tmp_path, *, enabled: bool = True):
+    """BTC gekauft und mit Kraken-Stop, ETH noch unter dem Schnitt. Drawdown-Sperre je nach Flag."""
+    logs: list[str] = []
+    clock = {"t": dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)}
+    cfg = _dd_cfg(drawdown_enabled=enabled)
+    fake, market = FakeKraken(), Market()
+    market.day(110, 8)
+    run = runner(tmp_path, fake, market, cfg=cfg, now=lambda: clock["t"], log=logs.append)
+    run.snapshot_path = tmp_path / "snapshot.json"
+    run.run_once()
+    for order in list(fake.open("limit")):
+        if order.pair == "XBTEUR":
+            fake.fill(order.txid)
+    run.run_once()
+    assert run.state.symbols["XBTEUR"].units > 0
+    assert [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    return fake, market, run, clock, logs
+
+
+def _price_for_drawdown(fake, run, remaining: float) -> float:
+    """Setzt den BTC-Kurs so, dass die Equity etwa ``remaining`` mal dem Höchststand ist."""
+    assert run.drawdown is not None
+    target = run.drawdown.peak_equity * remaining
+    lo, hi = 0.5, max(fake.price["XBTEUR"], 1.0)
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        fake.price["XBTEUR"] = mid
+        if run._account_equity() > target:
+            hi = mid
+        else:
+            lo = mid
+    fake.price["XBTEUR"] = lo
+    return lo
+
+
+def test_drawdown_config_is_off_by_default_and_cannot_loosen_past_45_percent():
+    cfg = LiveTrendConfig()
+    assert cfg.drawdown_enabled is False
+    assert cfg.drawdown_fraction == pytest.approx(0.45)
+    assert cfg.invest_fraction == 1.0
+    assert cfg.stop_frac == pytest.approx(0.20)
+    assert cfg.budget_eur == 20.0
+    LiveTrendConfig(drawdown_fraction=0.45)
+    LiveTrendConfig(drawdown_fraction=0.30)
+    with pytest.raises(LiveSafetyError, match="0.45"):
+        LiveTrendConfig(drawdown_fraction=0.46)
+    with pytest.raises(LiveSafetyError, match="50"):
+        LiveTrendConfig(budget_eur=50.01, drawdown_enabled=True)
+
+
+def test_drawdown_hit_blocks_buys_but_stop_and_sell_still_work(tmp_path):
+    fake, market, run, _clock, logs = _btc_with_drawdown(tmp_path)
+    assert run.drawdown is not None and not run.drawdown.halted
+    assert run.cfg.invest_fraction == 1.0
+    stop = next(o for o in fake.open("stop-loss") if o.pair == "XBTEUR")
+    _price_for_drawdown(fake, run, 0.50)  # 50 % unter dem Höchststand, Stop wird nicht ausgeführt
+    run.run_once()
+    assert run.drawdown.halted
+    assert stop.status == OrderStatus.OPEN
+    assert (tmp_path / "DRAWDOWN_HALT").exists()
+    assert not (tmp_path / "KILL").exists()
+    assert any(line.startswith("[DRAWDOWN]") and "Kraken-Stops" in line for line in logs)
+    snap = json.loads((tmp_path / "snapshot.json").read_text())
+    assert snap["drawdown"]["enabled"] is True and snap["drawdown"]["halted"] is True
+
+    market.day(110, 14)  # ETH will kaufen, BTC bleibt über dem Schnitt
+    run.run_once()
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+    assert [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    assert any("ETHEUR: keine neuen Käufe" in line for line in logs)
+    run.buy_now()
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+
+    market.day(80, 14)  # BTC unter SMA → Verkauf, ETH-Kauf bleibt gesperrt
+    run.run_once()
+    assert [o for o in fake.orders.values() if o.pair == "XBTEUR" and o.side == OrderSide.SELL]
+    assert not [o for o in fake.open() if o.pair == "ETHEUR" and o.side == OrderSide.BUY]
+
+
+def test_drawdown_not_hit_still_buys(tmp_path):
+    fake, market, run, _clock, logs = _btc_with_drawdown(tmp_path)
+    _price_for_drawdown(fake, run, 0.70)  # 30 % unter dem Höchststand
+    run.run_once()
+    assert run.drawdown is not None and not run.drawdown.halted
+    assert not (tmp_path / "DRAWDOWN_HALT").exists()
+    assert not any("Keine neuen Käufe, bis die Sperre" in line for line in logs)
+    market.day(110, 14)
+    run.run_once()
+    assert [o for o in fake.open("limit") if o.pair == "ETHEUR" and o.side == OrderSide.BUY]
+
+
+def test_drawdown_peak_tracks_and_persists_across_restart(tmp_path):
+    fake, market, run, clock, logs = _btc_with_drawdown(tmp_path)
+    assert run.drawdown is not None
+    before = run.drawdown.peak_equity
+    fake.price["XBTEUR"] = 300.0
+    run.run_once()
+    assert run.drawdown.peak_equity > before + 5
+    assert not run.drawdown.halted
+    peak = run.drawdown.peak_equity
+
+    again = runner(tmp_path, fake, market, cfg=_dd_cfg(), now=lambda: clock["t"], log=logs.append)
+    assert again.drawdown is not None
+    assert again.drawdown.peak_equity == pytest.approx(peak)
+    assert not again.drawdown.halted
+    raw = json.loads((tmp_path / "state.json").read_text())
+    assert raw["drawdown"]["peak_equity"] == pytest.approx(peak)
+
+    # 50 % unter dem höheren Höchststand: ohne den Anstieg wäre das noch keine 45-%-Sperre.
+    _price_for_drawdown(fake, again, 0.50)
+    equity = again._account_equity()
+    assert equity > before * 0.55
+    again.run_once()
+    assert again.drawdown.halted
+    assert again.drawdown.peak_equity == pytest.approx(peak)
+
+
+def test_drawdown_flag_off_does_not_change_buys_or_state(tmp_path):
+    fake, market, run, _clock, logs = _btc_with_drawdown(tmp_path, enabled=False)
+    assert run.drawdown is None
+    _price_for_drawdown_without_guard(fake, run)
+    run.run_once()
+    assert not any(line.startswith("[DRAWDOWN]") for line in logs)
+    assert not (tmp_path / "DRAWDOWN_HALT").exists()
+    raw = json.loads((tmp_path / "state.json").read_text())
+    assert "drawdown" not in raw
+    snap = json.loads((tmp_path / "snapshot.json").read_text())
+    assert snap["drawdown"] == {"enabled": False, "limit": 0.45}
+    market.day(110, 14)
+    run.run_once()
+    assert [o for o in fake.open("limit") if o.pair == "ETHEUR"]
+
+
+def _price_for_drawdown_without_guard(fake, run):
+    """Kurs, der bei eingeschalteter Sperre die 45 % reißen würde (halbes Budget in BTC)."""
+    fake.price["XBTEUR"] = 5.0
+    units = run.state.symbols["XBTEUR"].units
+    assert units * 5.0 < 20 * 0.45
+
+
+def test_drawdown_manual_reset_by_deleting_the_file_and_by_cli(tmp_path, monkeypatch, capsys):
+    from tradikg_bot.cli import main
+
+    fake, market, run, clock, logs = _btc_with_drawdown(tmp_path)
+    _price_for_drawdown(fake, run, 0.50)
+    run.run_once()
+    assert run.drawdown is not None and run.drawdown.halted
+    assert not (tmp_path / "KILL").exists()  # die Sperre legt keinen Kill-Switch an
+    (tmp_path / "DRAWDOWN_HALT").unlink()  # Hinweisdatei, kein Schalter
+    market.day(110, 14)
+    run.run_once()
+    assert run.drawdown.halted
+    assert not any("DRAWDOWN_HALT fehlt" in line for line in logs)
+    assert not any("drawdown-reset gelöst" in line for line in logs)
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+    from tradikg_bot.live.trend_live import release_drawdown_halt
+
+    release_drawdown_halt(tmp_path / "state.json")
+    market.day(112, 16)
+    run.run_once()
+    assert not run.drawdown.halted
+    assert any("drawdown-reset gelöst" in line for line in logs)
+    assert [o for o in fake.open("limit") if o.pair == "ETHEUR"]
+    assert not (tmp_path / "KILL").exists()
+
+    # Kalter Start: CLI setzt die Lösung in die Zustandsdatei, der Kill-Switch bleibt.
+    home = tmp_path / "home"
+    live = home / "live"
+    live.mkdir(parents=True)
+    state_path = live / "trend_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "symbols": {},
+                "drawdown": {
+                    "limit": 0.45,
+                    "peak_equity": 40.0,
+                    "halted": True,
+                    "rebase": False,
+                    "peak_at": "2019-01-01T00:00:00+00:00",
+                    "halted_at": "2019-06-01T00:00:00+00:00",
+                },
+            }
+        )
+    )
+    (live / "DRAWDOWN_HALT").write_text("sperre\n")
+    (live / "KILL_SWITCH").write_text("an")
+    monkeypatch.setenv("TRADIKG_HOME", str(home))
+    assert main(["live", "status"]) == 0
+    assert "Drawdown-Sperre: AKTIV" in capsys.readouterr().out
+    assert main(["live", "drawdown-reset"]) == 0
+    assert "nichts verkauft" in capsys.readouterr().out
+    assert not (live / "DRAWDOWN_HALT").exists()
+    assert (live / "KILL_SWITCH").read_text() == "an"
+    raw = json.loads(state_path.read_text())
+    assert raw["drawdown"]["halted"] is False
+    assert raw["drawdown"]["rebase"] is True
+    assert raw["drawdown"]["peak_equity"] == pytest.approx(40.0)
+    assert "symbols" in raw
+
+
+def test_drawdown_uses_bot_slice_not_the_whole_account(tmp_path):
+    """Konto 100 €, Budget 20 €: −45 % der Scheibe sperrt, −45 % vom Konto wäre unerreichbar."""
+    logs: list[str] = []
+    clock = {"t": dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)}
+    fake, market = FakeKraken(eur=100.0), Market()
+    market.day(110, 8)
+    run = runner(tmp_path, fake, market, cfg=_dd_cfg(), now=lambda: clock["t"], log=logs.append)
+    run.run_once()
+    for order in list(fake.open("limit")):
+        if order.pair == "XBTEUR":
+            fake.fill(order.txid)
+    run.run_once()
+    assert run.drawdown is not None
+    assert run.drawdown.peak_equity == pytest.approx(20.0, abs=0.5)
+    assert run.state.bot_cash_eur == pytest.approx(10.0, abs=0.3)
+    _price_for_drawdown(fake, run, 0.50)
+    units = run.state.symbols["XBTEUR"].units
+    account = fake.bal["ZEUR"] + units * fake.price["XBTEUR"] * 0.999
+    run.run_once()
+    assert run.drawdown.halted
+    assert run.drawdown.peak_equity == pytest.approx(20.0, abs=0.5)
+    assert account > 55  # 45 % vom 100-€-Konto wären erst bei 55 €
+    peak = run.drawdown.peak_equity
+    cash = run.state.bot_cash_eur
+    fake.bal["ZEUR"] += 80
+    fake.bal["XXBT"] += 0.02
+    fake.bal["XETH"] += 0.4
+    run.run_once()
+    assert run.drawdown.halted
+    assert run.drawdown.peak_equity == pytest.approx(peak)
+    assert run.state.bot_cash_eur == pytest.approx(cash)
+    assert run.state.symbols["XBTEUR"].units < fake.bal["XXBT"]
+
+
+def test_drawdown_does_not_replace_withdrawal_abort(tmp_path):
+    fake, market = FakeKraken(), Market()
+    market.day(110, 14)
+    fake.withdraw = True
+    with pytest.raises(LiveSafetyError, match="Auszahlungsrechte"):
+        runner(tmp_path, fake, market, cfg=_dd_cfg()).run_once()
+    assert not (tmp_path / "DRAWDOWN_HALT").exists()

@@ -67,6 +67,20 @@ tradikg live kill --release
 scripts/stop_live.sh       # Prozess beenden – Stops bei Kraken bleiben aktiv
 ```
 
+Die Drawdown-Sperre (Equity 45 % unter ihrem Höchststand) ist **aus**, solange sie nicht
+eingeschaltet wird. Sie ist nicht der Kill Switch. Wenn sie an ist und auslöst, liegen neue Käufe
+still, Verkäufe und die Stops bei Kraken laufen weiter, es wird nichts zwangsverkauft. Lösen nur
+von Hand:
+
+```bash
+tradikg live drawdown-reset
+```
+
+Nur dieser Befehl löst die Sperre. Er schreibt das in `trend_state.json`. Die Datei
+`~/.tradikg/live/DRAWDOWN_HALT` ist ein Hinweis und kein Schalter: sie zu löschen lässt die
+Sperre bestehen. `KILL_SWITCH` nicht anfassen. Der nächste Durchgang setzt den Höchststand
+auf die Equity der Bot-Scheibe in diesem Moment.
+
 Alles ist zusätzlich in Kraken Pro unter „Orders“ sichtbar (Bot-Orders haben eine `userref`).
 Notfall: In Kraken Pro offene Orders stornieren und Bestände von Hand verkaufen – der Bot gleicht
 das beim nächsten Durchgang ab und verkauft nie mehr, als er selbst gekauft hat.

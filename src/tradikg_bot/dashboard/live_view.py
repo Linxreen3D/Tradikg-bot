@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from tradikg_bot.platform_config import PlatformConfig
+from tradikg_bot.risk.limits import format_drawdown_banner
 
 GREEN, RED, BLUE, GREY = "#22c55e", "#ef4444", "#3b82f6", "#8a8985"
 
@@ -107,6 +108,9 @@ def render_real(cfg: PlatformConfig) -> None:
                 )
             else:
                 col.markdown(_card(name, "–", "keine Position"), unsafe_allow_html=True)
+        banner = format_drawdown_banner(s.get("drawdown"))
+        if banner:
+            st.markdown(banner)
         _real_charts(cfg, s, eur)
 
     real()
