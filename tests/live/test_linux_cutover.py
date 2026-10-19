@@ -305,7 +305,7 @@ def test_held_lock_refuses_start(tmp_path):
         proc.wait(timeout=5)
 
 
-def test_marker_tracks_the_dry_run_and_blocks_a_changed_state(tmp_path):
+def test_marker_tracks_config_and_commit_not_the_state_file(tmp_path):
     fake, market = FakeKraken(eur=100.0), Market()
     market.day(110, 8)
     order = _stop_order(0.09, opened_at=NOW.timestamp() - 86400)
@@ -314,11 +314,12 @@ def test_marker_tracks_the_dry_run_and_blocks_a_changed_state(tmp_path):
     fake.bal["XXBT"] = order.volume
     _run_dry(tmp_path, fake, market, reconstruct=True)
     paths = _paths(tmp_path)
+    stamped = json.loads(paths["dry_run_ok"].read_text())
+    assert stamped["code_commit"] and "state_sha256" not in stamped
     assert (
         marker_block_reason(
             paths["dry_run_ok"],
             budget_eur=20.0,
-            state_path=paths["state"],
             daily_loss_enabled=True,
             daily_loss_fraction=0.05,
         )
@@ -327,7 +328,6 @@ def test_marker_tracks_the_dry_run_and_blocks_a_changed_state(tmp_path):
     assert marker_block_reason(
         paths["dry_run_ok"],
         budget_eur=20.0,
-        state_path=paths["state"],
         daily_loss_enabled=False,
         daily_loss_fraction=0.05,
     )
@@ -335,7 +335,6 @@ def test_marker_tracks_the_dry_run_and_blocks_a_changed_state(tmp_path):
         marker_block_reason(
             paths["dry_run_ok"],
             budget_eur=20.0,
-            state_path=paths["state"],
             daily_loss_enabled=True,
             daily_loss_fraction=0.05,
             drawdown_enabled=True,
@@ -343,16 +342,26 @@ def test_marker_tracks_the_dry_run_and_blocks_a_changed_state(tmp_path):
         )
         or ""
     )
-    paths["state"].write_text(paths["state"].read_text() + "\n")
-    assert "geändert" in (
+    assert "Code-Stand" in (
         marker_block_reason(
             paths["dry_run_ok"],
             budget_eur=20.0,
-            state_path=paths["state"],
+            daily_loss_enabled=True,
+            daily_loss_fraction=0.05,
+            code_commit="nicht-der-probelauf",
+        )
+        or ""
+    )
+    # Der Bot schreibt die Datei im Betrieb. Das allein macht den Stempel nicht ungültig.
+    paths["state"].write_text(paths["state"].read_text() + "\n")
+    assert (
+        marker_block_reason(
+            paths["dry_run_ok"],
+            budget_eur=20.0,
             daily_loss_enabled=True,
             daily_loss_fraction=0.05,
         )
-        or ""
+        is None
     )
 
 
@@ -383,18 +392,26 @@ def test_reconstruct_refuses_a_position_bigger_than_the_slice():
 
 def test_unit_file_enables_daily_loss_and_drawdown():
     text = (ROOT / "deploy" / "linux" / "tradikg-live.service").read_text()
+    loop = (ROOT / "scripts" / "tradikg_run_live_loop.sh").read_text()
     assert "Restart=on-failure" in text
+    assert "RestartPreventExitStatus=2" in text
+    assert "tradikg_run_live_loop.sh" in text
     assert "Environment=TRADIKG_HOME=%h/.tradikg" in text
+    assert "Environment=TRADIKG_REPO=@REPO@" in text
     assert "EnvironmentFile=%h/.config/tradikg/live.env" in text
     assert "enable-linger" in text
-    assert "--budget 20" in text
-    assert "--daily-loss" in text and "--daily-loss-fraction 0.05" in text
-    assert "--drawdown-kill-fraction 0.45" in text
-    assert "--require-dry-run" in text
+    assert "--budget 20" in loop
+    assert "--daily-loss" in loop and "--daily-loss-fraction 0.05" in loop
+    assert "--drawdown-kill-fraction 0.45" in loop
+    assert "--require-dry-run" in loop
+    assert "live restart-check" in loop
+    assert "Exit 2" in loop
     assert "trend_state.json" in text and "KILL_SWITCH" in text
     assert "TRADIKG_DRAWDOWN_KILL_FRACTION" not in text
+    assert "TRADIKG_DRAWDOWN_KILL_FRACTION" not in loop
     assert "noch nicht gemergt" not in text
     assert "api_secret" not in text.lower()
+    assert "api_secret" not in loop.lower()
 
 
 def test_install_script_sets_mode_600_and_does_not_print_or_start(tmp_path):
@@ -421,9 +438,16 @@ def test_install_script_sets_mode_600_and_does_not_print_or_start(tmp_path):
     assert env_file.read_text().startswith("KRAKEN_API_KEY=dummy-not-a-secret")
     unit = (tmp_path / "config" / "systemd" / "user" / "tradikg-live.service").read_text()
     assert "@REPO@" not in unit
-    assert "--daily-loss" in unit and "Restart=on-failure" in unit
-    assert "--drawdown-kill-fraction 0.45" in unit
+    assert "Restart=on-failure" in unit and "RestartPreventExitStatus=2" in unit
+    assert "tradikg_run_live_loop.sh" in unit
     assert "TRADIKG_DRAWDOWN_KILL_FRACTION" not in unit
+    loop = tmp_path / ".local" / "bin" / "tradikg_run_live_loop.sh"
+    assert loop.is_file()
+    assert stat.S_IMODE(loop.stat().st_mode) & 0o111
+    loop_text = loop.read_text()
+    assert "--daily-loss" in loop_text and "--daily-loss-fraction 0.05" in loop_text
+    assert "--drawdown-kill-fraction 0.45" in loop_text and "--require-dry-run" in loop_text
+    assert "dummy-not-a-secret" not in loop_text
 
 
 def test_parser_exposes_the_linux_run_flags():
@@ -445,6 +469,18 @@ def test_parser_exposes_the_linux_run_flags():
     assert args.daily_loss and args.require_dry_run
     assert args.budget == 20.0 and args.daily_loss_fraction == 0.05
     assert args.drawdown_kill_fraction == 0.45
+    check = build_parser().parse_args(
+        [
+            "live",
+            "restart-check",
+            "--budget",
+            "20",
+            "--daily-loss",
+            "--drawdown-kill-fraction",
+            "0.45",
+        ]
+    )
+    assert check.budget == 20.0 and check.daily_loss and check.drawdown_kill_fraction == 0.45
     dry = build_parser().parse_args(
         ["live", "dry-run", "--budget", "20", "--daily-loss", "--import-state", "state.json"]
     )

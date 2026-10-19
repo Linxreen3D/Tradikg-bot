@@ -12,7 +12,11 @@ Der Linux-Lauf ist fest verdrahtet:
 - Drawdown-Sperre **an, 45 %** unter dem Höchststand der Scheibe
   (`--drawdown-kill-fraction 0.45`). Enger ist erlaubt, weiter nicht.
   Der Schalter ist dieses CLI-Flag. Eine Umgebungsvariable liest der Bot dafür nicht.
-- Neustart nur bei Fehler: `Restart=on-failure`.
+- Neustart nur bei Fehler: `Restart=on-failure`, aber nicht bei Exit 2
+  (`RestartPreventExitStatus=2`). Die Schleife
+  `~/.local/bin/tradikg_run_live_loop.sh` startet den Bot. Nach einem Absturz
+  und vor jedem Start prüft sie validate-only. Scheitert der Abgleich, endet
+  sie mit Exit 2 und systemd hebt sie nicht wieder an.
 - Zugangsdaten aus `~/.config/tradikg/live.env` (`chmod 600`), Fallback nach dem
   macOS-Schlüsselbund. Auszahlungsrecht bricht weiter ab.
 
@@ -24,7 +28,7 @@ Layout wie auf dem Mac, unter `TRADIKG_HOME` (Standard `~/.tradikg`):
 | `live/KILL_SWITCH` | keine neuen Käufe, Stops bleiben |
 | `live/live.pid` | PID von `start_live.sh` / dem Linux-Prozess |
 | `live/live.lock` | lokale Sperre (`flock`) |
-| `live/dry_run_ok.json` | Stempel des Probelaufs, ohne Geheimnisse |
+| `live/dry_run_ok.json` | Stempel des Probelaufs (Konfiguration und Commit, ohne Geheimnisse, ohne Zustandshash) |
 
 ## 1. Mac-Bot stoppen
 
@@ -79,7 +83,8 @@ scripts/install_linux_unit.sh
 sudo loginctl enable-linger "$USER"
 ```
 
-`install_linux_unit.sh` legt `~/.config/systemd/user/tradikg-live.service` an und,
+`install_linux_unit.sh` legt `~/.config/systemd/user/tradikg-live.service` an,
+kopiert die Neustart-Schleife nach `~/.local/bin/tradikg_run_live_loop.sh` und,
 falls noch keine Datei existiert, eine leere `~/.config/tradikg/live.env` mit
 `chmod 600`. Key und Secret **in dieser Datei auf der Box** eintragen
 (`KRAKEN_API_KEY`, `KRAKEN_API_SECRET`), Datei nicht cat-en und nicht committen.
@@ -141,10 +146,15 @@ Erwartung, wenn der Mac eine Position mit Stop hält:
 - `Auszahlungsrecht` darf nicht durchrutschen: der Lauf bricht ab, wenn der Key
   auszahlen darf (dieselbe Prüfung wie im Echtbetrieb).
 
-Der Stempel wird nur bei `OK` geschrieben. Er merkt sich Budget, Tagesverlust
-und Drawdown. Die Unit startet mit `--require-dry-run` und verweigert den Start
-ohne diesen Stempel, nach einer anderen Schwelle, oder nachdem die Zustandsdatei
-sich geändert hat. Probelauf und Unit müssen dieselben Flags tragen.
+Der Stempel wird nur bei `OK` geschrieben. Er merkt sich Budget, Tagesverlust,
+Drawdown und den Code-Stand (`git rev-parse HEAD`), nicht den Hash der
+Zustandsdatei. Die Datei ändert sich, sobald der Bot läuft; das allein ist kein
+Grund, einen Neustart zu verweigern. Ein anderes Budget, eine andere
+Tagesgrenze, eine andere Drawdown-Schwelle oder ein anderer Commit verlangt
+einen neuen manuellen Probelauf. Ein Stempel ohne `code_commit` (älterer
+Probelauf) zählt als anderer Code-Stand: vor dem ersten Start dieses Stands
+den Probelauf mit denselben Flags einmal wiederholen. Probelauf und Schleife
+müssen dieselben Flags tragen.
 
 ## 7. Erst jetzt live
 
@@ -154,13 +164,48 @@ systemctl --user status tradikg-live.service
 .venv/bin/tradikg live status
 ```
 
-Die Unit setzt Budget 20, Tagesverlustgrenze 5 %, Drawdown-Sperre 45 %
+Die Unit startet `~/.local/bin/tradikg_run_live_loop.sh`. Die Schleife setzt
+Budget 20, Tagesverlustgrenze 5 %, Drawdown-Sperre 45 %
 (`--drawdown-kill-fraction 0.45`) und `--require-dry-run`.
-`Restart=on-failure` hebt sie nach einem Absturz wieder an; ein sauberes
-Beenden (Exit 0) startet sie nicht neu. Ohne `enable-linger` stirbt sie beim
-Abmelden. Die 45 % sind die weiteste erlaubte Schwelle; enger geht über dasselbe
-Flag, weiter wird abgelehnt. Lösen einer ausgelösten Sperre nur mit
-`tradikg live drawdown-reset` (nichts wird dabei verkauft).
+`Restart=on-failure` gilt für die Schleife selbst. Exit 2
+(`RestartPreventExitStatus=2`) und ein sauberes Ende (Exit 0) starten sie nicht
+neu. Ohne `enable-linger` stirbt sie beim Abmelden. Die 45 % sind die weiteste
+erlaubte Schwelle; enger geht über dasselbe Flag, weiter wird abgelehnt. Lösen
+einer ausgelösten Sperre nur mit `tradikg live drawdown-reset` (nichts wird
+dabei verkauft).
+
+Vor jedem Start der Schleife, und damit auch nach einem Absturz, läuft
+`tradikg live restart-check`:
+
+- Kraken-Client ohne Handelsfreigabe (`allow_trading=False`).
+- `AddOrder` nur mit `validate=true`. Ein Storno oder eine echte Order bricht ab.
+- Nichts wird gespeichert: weder `trend_state.json` noch der Stempel noch die
+  Kill-Datei. Die Sperrdatei wird nur kurz genommen und wieder freigegeben.
+  Der Validate-Durchgang schreibt nur in ein temporäres Verzeichnis, das danach
+  verschwindet.
+- Offene Bot-Orders gegen `trend_state.json`.
+- Börsenseitiger Stop für jede Menge, die nicht gerade in einem Bot-Verkauf liegt.
+- Zweite Instanz: lebende PID, gehaltene Sperrdatei, Bot-Order mit `opentm` in
+  den letzten 15 Minuten.
+
+Nur wenn das passt, startet `tradikg live run`. Sonst eine Zeile
+`Neustart verweigert: … Kein Neustart.` und Exit 2. Die Schleife startet den Bot
+dann nicht erneut, und systemd auch nicht. Ein Konfigurationswechsel (Budget,
+Tagesgrenze, Drawdown, Commit) ist so ein Abbruch: zuerst einen neuen
+manuellen `tradikg live dry-run`, danach `systemctl --user start`.
+
+Kill-Switch, Auszahlungsabbruch, börsenseitiger Stop, 5-%-Tagesgrenze,
+Drawdown −45 % (nur manuell lösbar), `MAX_BUDGET_EUR=20` und die Verweigerung
+einer zweiten Instanz bleiben wie sie sind. Der Abgleich lockert keine davon.
+Eine Bot-Order mit `opentm` in den letzten 15 Minuten blockiert den Neustart
+(dieselbe Heuristik wie beim ersten Start). Die Schleife versucht es dann nicht
+noch einmal; nach dem Fenster `systemctl --user start` erneut, wenn keine
+andere Instanz läuft.
+
+Läuft die Unit schon, nach diesem Stand `scripts/install_linux_unit.sh` noch
+einmal ausführen (neue Schleife nach `~/.local/bin`, neue `ExecStart`-Zeile)
+und `systemctl --user daemon-reload`. Nicht `enable --now`, solange der
+Probelauf nicht `OK` ist.
 
 ## Nicht gleichzeitig mit dem Mac
 

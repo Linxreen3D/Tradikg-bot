@@ -2,6 +2,7 @@
 
 tradikg live check                      # Probelauf: Kraken prüft Orders nur, nichts passiert
 tradikg live dry-run                    # Übergabe: Zustand prüfen, nichts ordern, Stempel schreiben
+tradikg live restart-check               # vor einem Neustart: validate-only, nichts speichern
 tradikg live run --i-understand-this-uses-real-money   # echter Betrieb (stündlicher Abgleich)
 tradikg live status                     # Zustand + offene Orders
 tradikg live kill [--release]           # keine neuen Käufe (Stops bleiben)
@@ -201,8 +202,40 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_restart_check(args: argparse.Namespace) -> int:
+    """Validate-only vor einem Neustart. Handelsfreigabe aus, nichts wird gespeichert."""
+    import datetime as dt
+
+    from tradikg_bot.live.handover import execute_restart_reconcile
+    from tradikg_bot.live.kraken.credentials import CredentialsError
+    from tradikg_bot.live.trend_live import LiveSafetyError
+
+    try:
+        gateway, tcfg, paths, log, closes = _context(args, dry_run=True)
+        execute_restart_reconcile(
+            gateway=gateway,
+            paths=paths,
+            cfg=tcfg,
+            closes=closes,
+            log=log,
+            now=lambda: dt.datetime.now(dt.UTC),
+        )
+    except CredentialsError as exc:
+        print(f"Kein API-Key gefunden: {exc}\nSiehe docs/LIVE_START.md und docs/CUTOVER.md.")
+        return 2
+    except LiveSafetyError as exc:
+        print(exc)
+        return 2
+    except Exception:
+        print("Neustart verweigert: Abgleich nicht möglich. Kein Neustart.")
+        return 2
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    from tradikg_bot.live.handover import marker_block_reason
+    import datetime as dt
+
+    from tradikg_bot.live.handover import assess_restart
     from tradikg_bot.live.trend_live import LiveSafetyError
     from tradikg_bot.service.ops import AlreadyRunningError, InstanceLock
 
@@ -223,17 +256,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Abgelehnt: {peer}")
         return 1
     if args.require_dry_run:
-        block = marker_block_reason(
-            paths["dry_run_ok"],
-            budget_eur=tcfg.budget_eur,
-            state_path=paths["state"],
-            daily_loss_enabled=tcfg.daily_loss_enabled,
-            daily_loss_fraction=tcfg.daily_loss_fraction,
-            drawdown_enabled=tcfg.drawdown_enabled,
-            drawdown_fraction=tcfg.drawdown_fraction,
-        )
-        if block:
-            print(f"Abgelehnt: {block}")
+        # Dieselbe Prüfung wie die Neustart-Schleife, ohne AddOrder: der laufende
+        # Client hat Handelsfreigabe. Der validate-only-Durchgang liegt in restart-check.
+        try:
+            assess_restart(
+                gateway=runner.gw,
+                paths=paths,
+                cfg=tcfg,
+                now=dt.datetime.now(dt.UTC),
+            )
+        except LiveSafetyError as exc:
+            print(exc)
             return 2
     try:
         lock = InstanceLock(paths["lock"]).acquire()
@@ -408,6 +441,12 @@ def register(sub: argparse._SubParsersAction) -> None:
         help="Zustand nur aus offenen Bot-Orders (userref) bauen, innerhalb der Scheibe",
     )
     p.set_defaults(func=cmd_dry_run, platform_cmd=True)
+    p = ls.add_parser(
+        "restart-check",
+        help="Validate-only Abgleich vor einem Neustart, speichert nichts",
+    )
+    common(p)
+    p.set_defaults(func=cmd_restart_check, platform_cmd=True)
     p = ls.add_parser("run", help="Echtbetrieb starten (stündlicher Abgleich)")
     common(p)
     p.add_argument(CONFIRM_FLAG, dest="confirm", action="store_true")
@@ -415,7 +454,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--require-dry-run",
         action="store_true",
-        help="Start nur, wenn ein passender dry-run-Stempel vorliegt",
+        help=(
+            "Start nur nach passendem Probelauf (Budget, Tagesgrenze, Drawdown, "
+            "Code-Stand) und wenn Orders, Stops und die zweite Instanz passen"
+        ),
     )
     p.set_defaults(func=cmd_run, platform_cmd=True)
     p = ls.add_parser("buy-now", help="Wartende Kauf-Limits sofort marktnah kaufen + Stop setzen")
