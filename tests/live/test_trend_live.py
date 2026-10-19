@@ -112,6 +112,17 @@ class FakeKraken:
     def open_orders(self):
         return self.open()
 
+    def recent_closed_orders(self, since_ts: float):
+        return [
+            o
+            for o in self.orders.values()
+            if o.status.is_final
+            and (
+                (o.closed_at is not None and o.closed_at >= since_ts)
+                or (o.opened_at is not None and o.opened_at >= since_ts)
+            )
+        ]
+
     def open(self, kind=None):
         return [
             o
@@ -282,9 +293,8 @@ def test_crash_between_send_and_save_does_not_duplicate_order(tmp_path):
     r._save = lambda: None  # Absturz: Zustand wird nie gespeichert
     r.run_once()
     assert len(fake.orders) == 2
-    with pytest.raises(LiveSafetyError, match="Zustand"):  # Neustart ohne Zustand: Halt
-        runner(tmp_path, fake, m).run_once()
-    assert len(fake.orders) == 2  # nichts doppelt gesendet
+    runner(tmp_path, fake, m).run_once()  # ohne Datei: Käufe übernehmen, nicht doppelt senden
+    assert len(fake.orders) == 2
     del r._save  # Datei wiederhergestellt
     r._save()
     runner(tmp_path, fake, m).run_once()
@@ -454,7 +464,28 @@ def test_deployed_slice_is_not_refilled_from_the_rest_of_the_account(tmp_path):
     market.day(110)
     fake.bal["XXBT"] = 0.18
     bot = runner(tmp_path, fake, market)
-    bot.state.symbols["XBTEUR"] = SymbolState(units=0.18, entry_price=100.0, peak=100.0)
+    day = str(market("XBTEUR").index[-1].date())
+    ref = bot._ref(day, "XBTEUR", "stop")
+    fake.orders["S-BTC"] = ExchangeOrder(
+        "S-BTC",
+        ref,
+        "XBTEUR",
+        OrderSide.SELL,
+        "stop-loss",
+        OrderStatus.OPEN,
+        0.18,
+        price=80.0,
+        opened_at=0.0,
+    )
+    fake.refs["S-BTC"] = ref
+    bot.state.symbols["XBTEUR"] = SymbolState(
+        units=0.18,
+        entry_price=100.0,
+        peak=100.0,
+        stop_txid="S-BTC",
+        stop_price=80.0,
+        stop_units=0.18,
+    )
     bot.run_once()
     buys = [o for o in fake.orders.values() if o.side == OrderSide.BUY]
     assert buys and {o.pair for o in buys} == {"ETHEUR"}
@@ -530,7 +561,10 @@ def test_cli_rejects_budget_above_slice_before_reading_credentials(tmp_path, mon
 def test_lost_state_file_never_buys_twice_while_bot_orders_are_open(tmp_path):
     fake, m = _bought(tmp_path)
     fake.bal["ZEUR"] += 20.0  # Nutzer zahlt nach
+    stops = {o.txid for o in fake.open("stop-loss")}
     (tmp_path / "state.json").unlink()  # Zustand verloren (Festplatte, versehentlich gelöscht)
-    with pytest.raises(LiveSafetyError, match="Zustand"):
-        runner(tmp_path, fake, m).run_once()
+    again = runner(tmp_path, fake, m)
+    again.run_once()
+    assert {o.txid for o in fake.open("stop-loss")} == stops
     assert not [o for o in fake.open() if o.side == OrderSide.BUY]
+    assert again.state.symbols["XBTEUR"].units > 0

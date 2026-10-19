@@ -24,6 +24,9 @@ Sicherheit:
 * Kill-Switch-Datei: keine neuen Käufe, Stops bleiben aktiv.
 * ``dry_run``: Kraken prüft jede Order nur (``validate=true``), nichts wird ausgeführt oder
   gespeichert.
+* Übernahme vom Mac: kopierte Zustandsdatei wird geprüft und an Bot-Orders (``userref``)
+  gemessen. Offene Bot-Stops werden übernommen, nicht ein zweites Mal gelegt. Eine mögliche
+  zweite Instanz blockiert den Echtstart (``docs/CUTOVER.md``).
 """
 
 from __future__ import annotations
@@ -105,8 +108,9 @@ class LiveState:
     def load(cls, path: Path) -> LiveState:
         if not path.exists():
             return cls()
-        raw = json.loads(path.read_text())
-        return cls({s: SymbolState(**v) for s, v in raw.get("symbols", {}).items()})
+        from tradikg_bot.live.cutover import read_state_file
+
+        return read_state_file(path)
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,9 +136,9 @@ class LiveTrendRunner:
         self.gw, self.cfg, self.closes, self.kill = gateway, cfg, closes, kill_switch
         self.state_path, self.dry_run, self.log = state_path, dry_run, log
         self.snapshot_path = snapshot_path
-        self._fresh = not state_path.exists()
         self.state = LiveState.load(state_path)
         self._eur_used = 0.0
+        self._alone_checked = False
 
     # -- Kraken-Aufrufe ------------------------------------------------------------------------
     def _ref(self, day: str, sym: str, kind: str) -> int:
@@ -195,26 +199,174 @@ class LiveTrendRunner:
         except OrderRejectedError as exc:  # z. B. schon ausgeführt – der nächste Abgleich zeigt es
             self.log(f"[STORNO] {txid} nicht möglich: {exc}")
 
-    def _refuse_if_state_lost(self) -> None:
-        """Ohne Zustandsdatei kennt der Bot seine Positionen nicht. Liegen bei Kraken noch offene
-        Orders mit Bot-Kennung (z. B. Stops), würde er sonst ein zweites Mal kaufen."""
-        if not self._fresh or self.dry_run:
-            return
-        n = len(self.cfg.symbols)
-        mine = [
-            o.txid
-            for o in self.gw.open_orders()
-            if o.client_ref
-            and o.client_ref >= 10**7
-            and o.client_ref % 10 in KIND.values()
-            and 1 <= o.client_ref // 10 % 10 <= n
-        ]
-        if mine:
-            raise LiveSafetyError(
-                f"Zustandsdatei {self.state_path} fehlt, aber bei Kraken sind Bot-Orders offen "
-                f"({', '.join(mine)}). Datei wiederherstellen oder diese Orders selbst prüfen."
+    def _tagged(self, sym: str) -> list[tuple[int, Any]]:
+        from tradikg_bot.live.cutover import parse_userref
+
+        idx = self.cfg.symbols.index(sym)
+        rules = self.gw.pair_rules(sym)
+        names = {sym, rules.altname, rules.pair}
+        found = []
+        for order in self.gw.open_orders():
+            parsed = parse_userref(order.client_ref, len(self.cfg.symbols))
+            if parsed is None or order.status.is_final:
+                continue
+            _day, slot, kind = parsed
+            if slot == idx and order.pair in names:
+                found.append((kind, order))
+        return found
+
+    def _reconcile(self) -> None:
+        """Datei gegen Bot-Orders halten. Menge nur aus der Bot-Kennung, innerhalb der Scheibe."""
+        from tradikg_bot.live.models import OrderSide
+
+        notes: list[str] = []
+        balances = self.gw.balances()
+        notional = 0.0
+        for sym in self.cfg.symbols:
+            st = self.state.symbols.setdefault(sym, SymbolState())
+            tagged = self._tagged(sym)
+            stops = [
+                o
+                for kind, o in tagged
+                if kind == KIND["stop"] and o.side == OrderSide.SELL and o.ordertype == "stop-loss"
+            ]
+            buys = [
+                o
+                for kind, o in tagged
+                if kind in (KIND["buy"], KIND["buy_fallback"]) and o.side == OrderSide.BUY
+            ]
+            sells = [
+                o
+                for kind, o in tagged
+                if kind in (KIND["sell"], KIND["sell_fallback"])
+                and o.side == OrderSide.SELL
+                and o.ordertype != "stop-loss"
+            ]
+            if len(stops) > 1:
+                ids = ", ".join(o.txid for o in stops)
+                raise LiveSafetyError(
+                    f"{sym}: {len(stops)} Bot-Stops offen ({ids}). Nichts gesendet."
+                )
+            if len(buys) > 1:
+                raise LiveSafetyError(f"{sym}: mehrere offene Bot-Käufe. Nichts gesendet.")
+            if stops:
+                self._adopt_stop(sym, st, stops[0], notes)
+            elif (st.units > 0 or st.stop_txid) and not sells:
+                self._drop_unverified(sym, st, notes)
+            if buys:
+                buy = buys[0]
+                if st.buy_txid != buy.txid:
+                    notes.append(f"{sym}: offenen Kauf {buy.txid} übernommen")
+                st.buy_txid = buy.txid
+                st.buy_eur = max(st.buy_eur, buy.volume * (buy.price or 0.0))
+                if not st.last_candle:
+                    from tradikg_bot.live.cutover import parse_userref
+
+                    parsed = parse_userref(buy.client_ref, len(self.cfg.symbols))
+                    if parsed:
+                        st.last_candle = parsed[0]
+            if sells and st.sell_txid != sells[0].txid:
+                st.sell_txid = sells[0].txid
+                notes.append(f"{sym}: offenen Verkauf {sells[0].txid} übernommen")
+            base = self.gw.pair_rules(sym).base
+            held = balances[base].total if base in balances else 0.0
+            # Teilverkauf einer noch offenen Order ist schon vom Bestand weg, in ``units``
+            # aber erst beim Abschluss. Sonst zieht der Fallback dieselbe Menge noch einmal ab.
+            in_open_sell = sum(o.filled for o in (*stops, *sells))
+            explainable = held + in_open_sell
+            if st.units > explainable + 1e-8:
+                notes.append(f"{sym}: Menge {st.units:.8f} > Bestand {explainable:.8f} – gekürzt")
+                st.units = max(0.0, explainable)
+            notional += max(0.0, st.units) * max(st.entry_price, 0.0)
+            if st.buy_txid:
+                notional += max(0.0, st.buy_eur)
+            self.log(
+                f"[ÜBERNAHME] {sym}: Menge {st.units:.8f} Einstieg {st.entry_price:.2f} "
+                f"Stop {st.stop_txid or '–'} Kauf {st.buy_txid or '–'}"
             )
-        self._fresh = False
+        if notional > self.cfg.own_slice_eur + 0.05:
+            raise LiveSafetyError(
+                f"Bot-Positionen {notional:.2f} € liegen über der Scheibe von "
+                f"{self.cfg.own_slice_eur:.0f} €. Nichts gesendet."
+            )
+        for line in notes:
+            self.log(f"[ÜBERNAHME] {line}")
+        if not notes:
+            self.log("[ÜBERNAHME] keine Korrektur")
+
+    def _adopt_stop(self, sym: str, st: SymbolState, stop, notes: list[str]) -> None:
+        from tradikg_bot.live.cutover import parse_userref
+
+        vol = float(stop.volume)
+        price = float(stop.price or 0.0)
+        tol = max(1e-8, vol * 1e-6)
+        same = st.stop_txid == stop.txid and abs(st.units - vol) <= tol
+        if not same:
+            notes.append(
+                f"{sym}: Stop {stop.txid} userref {stop.client_ref} gilt, "
+                f"Menge {vol:.8f} (Datei hatte {st.units:.8f})"
+            )
+            if not (st.entry_price > 0 and abs(st.units - vol) <= tol):
+                if st.entry_price > 0:
+                    notes.append(f"{sym}: Einstieg aus der Datei verworfen")
+                implied = price / (1 - self.cfg.stop_frac) if price else 0.0
+                st.entry_price = implied
+                st.peak = max(st.peak, implied)
+        st.stop_txid = stop.txid
+        st.stop_price = price
+        st.stop_units = vol
+        st.units = vol
+        if price and self.cfg.stop_frac < 1:
+            st.peak = max(st.peak, st.entry_price, price / (1 - self.cfg.stop_frac))
+        if not st.last_candle:
+            parsed = parse_userref(stop.client_ref, len(self.cfg.symbols))
+            if parsed:
+                st.last_candle = parsed[0]
+
+    def _drop_unverified(self, sym: str, st: SymbolState, notes: list[str]) -> None:
+        """Menge aus der Datei nur behalten, wenn die Stop-Id eine Bot-Order ist."""
+        from tradikg_bot.live.cutover import parse_userref
+
+        if st.stop_txid:
+            order = self.gw.query_orders([st.stop_txid]).get(st.stop_txid)
+            if order is not None and parse_userref(order.client_ref, len(self.cfg.symbols)):
+                if order.status.is_final:
+                    notes.append(f"{sym}: Stop {st.stop_txid} ist geschlossen, Abgleich bucht ihn")
+                return
+        if st.units > 0:
+            notes.append(f"{sym}: Menge {st.units:.8f} ohne Bot-Order – nicht gezählt")
+        st.units, st.entry_price, st.peak = 0.0, 0.0, 0.0
+        st.stop_txid, st.stop_price, st.stop_units = None, 0.0, 0.0
+
+    def _guard_other_instance(self) -> bool:
+        """False: Probelauf endet ohne neue Orders. Echtstart wirft ``LiveSafetyError``."""
+        import time
+
+        from tradikg_bot.live.cutover import QUIET_S, find_other_instance, write_heartbeat
+
+        if self._alone_checked:
+            if not self.dry_run:
+                write_heartbeat(self.state_path.parent / "heartbeat.json")
+            return True
+        closed: list[Any] = []
+        recent = getattr(self.gw, "recent_closed_orders", None)
+        if recent is not None:
+            closed = list(recent(time.time() - QUIET_S))
+        reasons = find_other_instance(
+            self.state_path.parent,
+            [*self.gw.open_orders(), *closed],
+            self.cfg.symbols,
+        )
+        if reasons:
+            text = "Mögliche zweite Instanz: " + "; ".join(reasons)
+            if self.dry_run:
+                self.log(f"[ZWEITE INSTANZ] {text}. Probelauf sendet nichts.")
+                return False
+            raise LiveSafetyError(text + ". Nichts gesendet.")
+        self._alone_checked = True
+        if not self.dry_run:
+            write_heartbeat(self.state_path.parent / "heartbeat.json")
+        return True
 
     # -- ein Durchgang -------------------------------------------------------------------------
     def run_once(self) -> LiveState:
@@ -222,9 +374,11 @@ class LiveTrendRunner:
             raise LiveSafetyError(
                 "API-Key hat Auszahlungsrechte – bitte Key ohne Auszahlung anlegen"
             )
-        self._refuse_if_state_lost()
         if self.gw.has_margin_positions():
             raise LiveSafetyError("Margin-Positionen vorhanden – der Bot handelt nur Spot")
+        self._reconcile()
+        if not self._guard_other_instance():
+            return self.state
         balances = self.gw.balances()
         self._eur_used = 0.0
         for sym in self.cfg.symbols:
@@ -270,7 +424,9 @@ class LiveTrendRunner:
             raise LiveSafetyError(
                 "API-Key hat Auszahlungsrechte – bitte Key ohne Auszahlung anlegen"
             )
-        self._refuse_if_state_lost()
+        self._reconcile()
+        if not self._guard_other_instance():
+            return self.state
         balances = self.gw.balances()
         self._eur_used = 0.0
         today = str(pd.Timestamp.now(tz="UTC").date())
@@ -514,6 +670,13 @@ class LiveTrendRunner:
             self._eur_used += eur
 
     def _buy(self, sym, st, day, close, book, rules, _balances) -> None:
+        open_buys = [
+            o for kind, o in self._tagged(sym) if kind in (KIND["buy"], KIND["buy_fallback"])
+        ]
+        if open_buys:
+            st.buy_txid = open_buys[0].txid
+            self.log(f"[ÜBERNAHME] {sym}: Kauf {open_buys[0].txid} schon offen, kein zweiter")
+            return
         # Frisch lesen: der Snapshot vom Durchgangsstart kennt Orders aus diesem Umlauf nicht.
         balances = self.gw.balances()
         eur = self._eur_for_new_buy(st, balances, rules.quote)
@@ -545,6 +708,23 @@ class LiveTrendRunner:
     def _ensure_stop(self, sym: str, st: SymbolState) -> None:
         """Notfall-Stop bei Kraken setzen bzw. nachziehen (nur für eigene Menge)."""
         if st.units <= 0 or st.sell_txid:
+            return
+        stops = [
+            o
+            for kind, o in self._tagged(sym)
+            if kind == KIND["stop"] and o.ordertype == "stop-loss"
+        ]
+        if len(stops) > 1:
+            ids = ", ".join(o.txid for o in stops)
+            raise LiveSafetyError(
+                f"{sym}: {len(stops)} Bot-Stops offen ({ids}). Kein weiterer Stop."
+            )
+        if len(stops) == 1 and stops[0].txid != st.stop_txid:
+            order = stops[0]
+            st.stop_txid = order.txid
+            st.stop_price = float(order.price or 0.0)
+            st.stop_units = float(order.volume)
+            self.log(f"[ÜBERNAHME] {sym}: bestehenden Stop {order.txid} übernommen, kein zweiter")
             return
         rules = self.gw.pair_rules(sym)
         target = rules.round_price_down(max(st.peak, st.entry_price) * (1 - self.cfg.stop_frac))

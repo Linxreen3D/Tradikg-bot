@@ -1,6 +1,7 @@
 """CLI: ``tradikg live …`` – Echtgeld-Trendfolge auf Kraken (kleines Budget, siehe trend_live).
 
 tradikg live check                      # Probelauf: Kraken prüft Orders nur, nichts passiert
+tradikg live import trend_state.json    # Mac-Zustand prüfen und ablegen, keine Orders
 tradikg live run --i-understand-this-uses-real-money   # echter Betrieb (stündlicher Abgleich)
 tradikg live status                     # Zustand + offene Orders
 tradikg live kill [--release]           # keine neuen Käufe (Stops bleiben)
@@ -9,6 +10,7 @@ tradikg live kill [--release]           # keine neuen Käufe (Stops bleiben)
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import threading
 import time
@@ -31,6 +33,8 @@ def _paths(cfg: PlatformConfig) -> dict[str, Path]:
         "log": root / "live.log",
         "lock": root / "live.lock",
         "snapshot": root / "snapshot.json",
+        "pid": root / "live.pid",
+        "heartbeat": root / "heartbeat.json",
     }
 
 
@@ -133,6 +137,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     except AlreadyRunningError as exc:
         print(f"Abgelehnt: {exc}")
         return 1
+    paths["pid"].write_text(str(os.getpid()))
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())  # stop_live.sh: sauber beenden
     log(f"ECHTBETRIEB gestartet – Budget {tcfg.budget_eur:.2f} €, Symbole {list(tcfg.symbols)}")
@@ -152,6 +157,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         pass
     finally:
         lock.release()
+        if paths["pid"].exists() and paths["pid"].read_text().strip() == str(os.getpid()):
+            paths["pid"].unlink()
         log("Echtbetrieb beendet (Stops bei Kraken bleiben aktiv).")
     return 0
 
@@ -186,6 +193,30 @@ def cmd_buy_now(args: argparse.Namespace) -> int:
         return 2
     finally:
         lock.release()
+    return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    """Kopierte Mac-Zustandsdatei prüfen und lokal ablegen. Handelt nicht und liest keine Keys."""
+    from tradikg_bot.live.cutover import read_state_file
+    from tradikg_bot.live.trend_live import LiveSafetyError
+
+    src = Path(args.path)
+    try:
+        state = read_state_file(src)
+    except LiveSafetyError as exc:
+        print(f"ABBRUCH: {exc}")
+        return 2
+    cfg = PlatformConfig.load(getattr(args, "platform_config", None))
+    dest = _paths(cfg)["state"]
+    if dest.exists() and not args.replace:
+        print(f"Zieldatei {dest} existiert. Mit --replace ersetzen. Nichts geschrieben.")
+        return 2
+    state.save(dest)
+    print(
+        f"Zustand geprüft und nach {dest} kopiert ({len(state.symbols)} Symbole). "
+        "Noch nicht live. Als Nächstes: tradikg live check. Siehe docs/CUTOVER.md."
+    )
     return 0
 
 
@@ -250,6 +281,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     common(p)
     p.add_argument(CONFIRM_FLAG, dest="confirm", action="store_true")
     p.set_defaults(func=cmd_buy_now, platform_cmd=True)
+    p = ls.add_parser("import", help="Mac-Zustandsdatei prüfen und ablegen (keine Orders)")
+    p.add_argument("path", help="Pfad zur kopierten trend_state.json")
+    p.add_argument("--platform-config")
+    p.add_argument("--replace", action="store_true")
+    p.set_defaults(func=cmd_import, platform_cmd=True)
     p = ls.add_parser("status", help="Zustand, Stops und letzte Log-Einträge")
     p.add_argument("--platform-config")
     p.set_defaults(func=cmd_status, platform_cmd=True)

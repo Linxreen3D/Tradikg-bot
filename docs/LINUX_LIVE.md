@@ -5,7 +5,8 @@ Der Dauerbetrieb auf Linux ist eine **systemd-User-Unit**. Es gibt keine launchd
 Echtgeld-Bot; die vorhandenen launchd-Vorlagen bleiben nur für Paper und Dashboard auf dem Mac.
 
 Nichts davon startet den Bot von allein. Zuerst der Probelauf, danach die Unit, und erst dann
-startest du den Dienst selbst.
+startest du den Dienst selbst. Löst der Linux-Bot einen laufenden Mac-Bot auf demselben
+Kraken-Konto ab, gilt vorher die Checkliste in `docs/CUTOVER.md`.
 
 ## Was der Bot anfassen darf
 
@@ -14,7 +15,7 @@ Das Kraken-Konto kann mehr Guthaben halten (zum Beispiel rund 100 €). Der Bot 
 Scheibe und dem **frei verfügbaren** EUR-Guthaben berechnet, nicht aus dem ganzen Kontostand.
 
 Der Abbruch bei einem API-Schlüssel **mit Auszahlungsrecht** bleibt. Exit-Code 2 (Auszahlung,
-Margin, verlorener Zustand, fehlende Zugangsdaten, Budget über 20 €) startet systemd nicht neu.
+Margin, fehlende Zugangsdaten, Budget über 20 €, mögliche zweite Instanz) startet systemd nicht neu.
 
 ## 1. Zugangsdaten außerhalb des Repos
 

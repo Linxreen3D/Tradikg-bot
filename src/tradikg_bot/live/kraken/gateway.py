@@ -98,6 +98,8 @@ def parse_order(txid: str, raw: dict[str, Any]) -> ExchangeOrder:
         avg_price=_f(raw.get("price")),
         fee=_f(raw.get("fee")),
         price=price,
+        opened_at=_f(raw.get("opentm"), 0.0) or None,
+        closed_at=_f(raw.get("closetm"), 0.0) or None,
     )
 
 
@@ -159,6 +161,13 @@ class KrakenSpotGateway:
     def open_orders(self) -> list[ExchangeOrder]:
         result = self.client.private("OpenOrders")
         return [parse_order(txid, raw) for txid, raw in result.get("open", {}).items()]
+
+    def recent_closed_orders(self, since_ts: float) -> list[ExchangeOrder]:
+        """Geschlossene Orders seit ``since_ts`` (closetm). Gleiches Konto, jeder API-Key."""
+        result = self.client.private(
+            "ClosedOrders", {"start": str(int(since_ts)), "closetime": "close"}
+        )
+        return [parse_order(txid, raw) for txid, raw in result.get("closed", {}).items()]
 
     def orders_by_client_ref(self, client_ref: int) -> list[ExchangeOrder]:
         opened = self.client.private("OpenOrders", {"userref": client_ref}).get("open", {})
