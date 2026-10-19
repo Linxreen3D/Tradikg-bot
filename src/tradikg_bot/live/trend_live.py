@@ -16,6 +16,10 @@ Gleiche Regel wie ``trading/allocation.py`` (Paper/Schnelldurchlauf), aber mit e
   unmittelbar vor dem Market-Verkauf gelöst. Schlägt der Verkauf fehl, setzt derselbe Durchgang
   den Stop wieder. Ein noch offenes Limit aus einem älteren Lauf wird sofort durch den Stop ersetzt.
 * Nach ausgelöstem Stop erst wieder Einstieg nach neuem Kreuzen von unten.
+* Rest unter dem Börsenminimum (Mindestmenge oder Mindestwert eines Stops) bleibt in der
+  Bewertung, gilt für Kauf, Ausstieg und den Alarm aber als keine Position. Der nächste Kauf
+  übernimmt die Restmenge; der Stop deckt dann die Summe. Kein Stop und kein Market-Verkauf
+  unter dem Minimum.
 
 Sicherheit:
 * Budget hart auf 20 € gedeckelt (``MAX_BUDGET_EUR``); je Coin höchstens Budget × Anteil /
@@ -678,7 +682,13 @@ class LiveTrendRunner:
             above = len(closes) >= self.cfg.sma and float(closes.iloc[-1]) > float(
                 closes.iloc[-self.cfg.sma :].mean()
             )
-            if st.units > 0 or not above or st.blocked or self.kill.exists():
+            if (
+                not self._decision_flat(sym, st)
+                or st.sell_txid
+                or not above
+                or st.blocked
+                or self.kill.exists()
+            ):
                 self.log(f"[JETZT] {sym}: kein Sofortkauf (gekauft, Abwärtstrend, Sperre, Kill)")
                 continue
             if self._new_buys_blocked(sym):
@@ -844,9 +854,13 @@ class LiveTrendRunner:
                     f"[ALARM] {sym}: Verkauf {st.sell_txid} liegt weiter – "
                     "kein zweiter Verkauf, solange die Menge gebunden ist"
                 )
-        if not st.sell_txid and st.sell_day and st.units > 0 and st.sell_day != day:
+        # Unter dem Börsenminimum: Menge bleibt für die Bewertung, Entscheidungen wie flach.
+        flat = self._decision_flat(sym, st)
+        if flat and not st.sell_txid:
+            st.sell_day = None
+        if not st.sell_txid and st.sell_day and not flat and st.sell_day != day:
             self._market_exit(sym, st, day, rules)
-        elif st.units > 0 and not above:
+        elif not flat and st.units > 0 and not above:
             # Kein Post-only: das Limit würde die vom Stop gebundene Menge brauchen und den
             # Kurssturz nicht auffangen. Der Stop bleibt, bis _market_exit ihn ablöst.
             if st.sell_day != day:
@@ -855,9 +869,9 @@ class LiveTrendRunner:
                     f"[AUSSTIEG] {sym}: Tagesschluss unter SMA – Notfall-Stop bleibt bis zum "
                     "Market-Verkauf am nächsten Tagesschluss"
                 )
-        elif st.units > 0:
+        elif not flat and st.units > 0:
             st.peak = max(st.peak, close)
-        elif above and not st.blocked and not st.buy_txid:
+        elif above and not st.blocked and not st.buy_txid and not st.sell_txid:
             if self.kill.exists():
                 self.log(f"[KILL] {sym}: keine neuen Käufe (Kill Switch)")
             elif self._new_buys_blocked(sym):
@@ -878,10 +892,27 @@ class LiveTrendRunner:
             (self._apply_buy if buy else self._apply_sell)(sym, st, order)
         return True
 
+    def _decision_flat(self, sym: str, st: SymbolState) -> bool:
+        """Unter dem Börsenminimum: für Kauf, Ausstieg und Alarm wie ohne Position.
+
+        Die Menge bleibt in ``st.units``. Tagesverlust und Drawdown bewerten sie weiter.
+        """
+        if st.units <= 0:
+            return True
+        rules = self.gw.pair_rules(sym)
+        volume = rules.round_volume_down(st.units)
+        basis = max(st.peak, st.entry_price, 0.0)
+        target = rules.round_price_down(basis * (1 - self.cfg.stop_frac)) if basis > 0 else 0.0
+        return not self._stop_size_ok(sym, target, volume)
+
     def _market_exit(self, sym: str, st: SymbolState, day: str, rules) -> None:
         """Market-Verkauf. Der Stop wird erst hier gelöst, weil Kraken die Basismenge nur
         einmal bindet. Bleibt der Stop offen oder wird der Verkauf abgelehnt, ist die Position
         am Ende des Durchgangs wieder börsenseitig geschützt (``_ensure_stop``)."""
+        if self._decision_flat(sym, st):
+            if not st.sell_txid:
+                st.sell_day = None
+            return
         if self.dry_run:
             if st.stop_txid:
                 self._cancel(st.stop_txid, "Market-Ausstieg – Stop gibt die Menge frei")
@@ -956,7 +987,7 @@ class LiveTrendRunner:
         st.sell_txid = None
 
     def _alarm_if_naked(self, sym: str, st: SymbolState) -> None:
-        if self.dry_run or st.units <= 0 or st.stop_txid or st.sell_txid:
+        if self.dry_run or self._decision_flat(sym, st) or st.stop_txid or st.sell_txid:
             return
         if sym in self._naked_noted:
             return
