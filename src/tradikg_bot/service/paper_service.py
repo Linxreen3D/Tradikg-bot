@@ -97,6 +97,8 @@ class PaperService:
                 daily_loss_enabled=cfg.daily_loss_enabled,
                 daily_loss_fraction=cfg.daily_loss_fraction,
                 daily_loss_timezone=cfg.daily_loss_timezone,
+                drawdown_enabled=cfg.drawdown_enabled,
+                drawdown_fraction=cfg.drawdown_fraction,
             )
             self.engine = TrendPaperEngine(
                 PaperPaths(cfg.paper_dir), rules, cfg.capital_eur, cfg.timeframe, cfg.tax_rate, tcfg
@@ -108,6 +110,12 @@ class PaperService:
                     "(nur neue Käufe, keine Zwangsverkäufe)",
                     tcfg.daily_loss_fraction * 100,
                     tcfg.daily_loss_timezone,
+                )
+            if tcfg.drawdown_enabled:
+                self.log.info(
+                    "Drawdown-Sperre an: %.0f%% unter dem Equity-Höchststand "
+                    "(nur neue Käufe, Lösung von Hand, keine Zwangsverkäufe)",
+                    tcfg.drawdown_fraction * 100,
                 )
             return
         stats = self.research.oos_stats()

@@ -27,8 +27,13 @@ Sicherheit:
   Verkäufe und Stops laufen weiter. Standard 5 % der Scheibe zum Beginn des Wiener
   Tages (00:00 Europe/Vienna), höchstens 10 %. Ist sie gerissen, keine neuen Käufe
   bis zum nächsten Wiener Tag. Es wird nichts zwangsverkauft.
-* ``dry_run``: Kraken prüft jede Order nur (``validate=true``), nichts wird ausgeführt oder
-  gespeichert.
+* Optionale Drawdown-Sperre (standardmäßig **aus**): dieselbe Scheibe gegen ihren
+  Höchststand. Standard 45 % darunter, nur enger. Sie sperrt neue Käufe, bis
+  jemand ``tradikg live drawdown-reset`` ausführt. ``DRAWDOWN_HALT`` ist nur ein
+  Hinweis; Löschen löst die Sperre nicht. Keine Zwangsverkäufe, Stops bleiben.
+* ``dry_run``: Kraken prüft jede Order nur (``validate=true``), nichts wird ausgeführt.
+  Orders und Kerzen werden nicht gespeichert. Eine ausgelöste Drawdown-Sperre schon,
+  sofort, damit sie den nächsten Coin und den nächsten Durchgang sperrt.
 """
 
 from __future__ import annotations
@@ -45,10 +50,14 @@ import pandas as pd
 from tradikg_bot.costs import KRAKEN_SPOT_TAKER
 from tradikg_bot.live.models import OrderRejectedError, OutcomeUnknownError
 from tradikg_bot.risk.limits import (
+    DRAWDOWN_HALT_NAME,
     TREND_DAILY_LOSS_FRACTION,
     TREND_DAILY_LOSS_TIMEZONE,
+    TREND_DRAWDOWN_FRACTION,
     DailyLossGuard,
+    DrawdownGuard,
     validate_trend_daily_loss,
+    validate_trend_drawdown,
 )
 
 MAX_BUDGET_EUR = 50.0
@@ -82,6 +91,10 @@ class LiveTrendConfig:
     daily_loss_enabled: bool = False
     daily_loss_fraction: float = TREND_DAILY_LOSS_FRACTION
     daily_loss_timezone: str = TREND_DAILY_LOSS_TIMEZONE
+    # Drawdown vom Equity-Höchststand. Aus, bis sie bewusst eingeschaltet wird.
+    # 45 % ist die weiteste Schwelle (−30 % hätte 2019 den Trend beendet).
+    drawdown_enabled: bool = False
+    drawdown_fraction: float = TREND_DRAWDOWN_FRACTION
 
     def __post_init__(self) -> None:
         if not 0 < self.budget_eur <= MAX_BUDGET_EUR:
@@ -90,6 +103,7 @@ class LiveTrendConfig:
             raise LiveSafetyError("invest_fraction muss in (0, 1] liegen")
         try:
             validate_trend_daily_loss(self.daily_loss_fraction, self.daily_loss_timezone)
+            validate_trend_drawdown(self.drawdown_fraction)
         except ValueError as exc:
             raise LiveSafetyError(str(exc)) from exc
 
@@ -119,21 +133,21 @@ class SymbolState:
 @dataclass
 class LiveState:
     symbols: dict[str, SymbolState] = field(default_factory=dict)
-    # Nur gesetzt, wenn die Tagesverlustgrenze an ist. Sonst fehlt der Schlüssel in der Datei.
+    # Nur gesetzt, wenn die jeweilige Grenze an ist. Sonst fehlt der Schlüssel in der Datei.
     daily_loss: dict[str, Any] | None = None
     # EUR, die der Bot selbst noch hält. None, solange keine Grenze die Scheibe bewertet.
     # Einzahlungen und fremde Trades ändern den Wert nicht; nur eigene Käufe und Verkäufe.
     bot_cash_eur: float | None = None
+    drawdown: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, path: Path) -> LiveState:
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text())
-        state = cls(
-            {s: SymbolState(**v) for s, v in raw.get("symbols", {}).items()},
-            raw.get("daily_loss"),
-        )
+        state = cls({s: SymbolState(**v) for s, v in raw.get("symbols", {}).items()})
+        state.daily_loss = raw.get("daily_loss")
+        state.drawdown = raw.get("drawdown")
         if raw.get("bot_cash_eur") is not None:
             state.bot_cash_eur = float(raw["bot_cash_eur"])
         return state
@@ -145,9 +159,42 @@ class LiveState:
             payload["daily_loss"] = self.daily_loss
         if self.bot_cash_eur is not None:
             payload["bot_cash_eur"] = self.bot_cash_eur
+        if self.drawdown is not None:
+            payload["drawdown"] = self.drawdown
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2))
         tmp.replace(path)  # atomar
+
+
+def release_drawdown_halt(state_path: Path) -> None:
+    """Löst die Drawdown-Sperre von Hand. Die Kill-Switch-Datei bleibt unberührt.
+
+    Schreibt eine neue ``reset_id`` in die Zustandsdatei. Ein laufender Prozess löst
+    nur, wenn diese Marke höher ist als die gemerkte. ``DRAWDOWN_HALT`` wird nur als
+    Hinweis entfernt; die Datei allein zu löschen lässt die Sperre bestehen. Der
+    nächste Durchgang setzt den Höchststand auf die dann gesehene Equity.
+    """
+    flag = state_path.parent / DRAWDOWN_HALT_NAME
+    flag.unlink(missing_ok=True)
+    if not state_path.exists():
+        return
+    state = LiveState.load(state_path)
+    if state.drawdown is None:
+        return
+    try:
+        seen = int(state.drawdown.get("reset_id") or 0)
+    except (TypeError, ValueError):
+        seen = 0
+    # ``reset_id`` ist der einzige Schalter für einen laufenden Prozess. ``halted: false``
+    # auf der Platte reicht nicht: der Guard läuft je Coin, bevor der neue Stand liegt.
+    state.drawdown = {
+        **state.drawdown,
+        "halted": False,
+        "halted_at": None,
+        "rebase": True,
+        "reset_id": seen + 1,
+    }
+    state.save(state_path)
 
 
 class LiveTrendRunner:
@@ -178,6 +225,11 @@ class LiveTrendRunner:
                 limit=cfg.daily_loss_fraction,
                 timezone=cfg.daily_loss_timezone,
             )
+        # Hinweisdatei, nicht der Kill-Switch. Löschen hebt die Sperre nicht auf.
+        self.drawdown_file = state_path.parent / DRAWDOWN_HALT_NAME
+        self.drawdown: DrawdownGuard | None = None
+        if cfg.drawdown_enabled:
+            self.drawdown = DrawdownGuard.restore(self.state.drawdown, limit=cfg.drawdown_fraction)
 
     # -- Kraken-Aufrufe ------------------------------------------------------------------------
     def _ref(self, day: str, sym: str, kind: str) -> int:
@@ -376,11 +428,148 @@ class LiveTrendRunner:
         return True
 
     def _new_buys_blocked(self, sym: str) -> bool:
-        """Tagesgrenze oder fehlende Bewertung. Verkäufe und Stops prüfen das nicht."""
+        """Tagesgrenze, Drawdown oder fehlende Bewertung. Verkäufe und Stops nicht."""
         if self._valuation_block:
             self.log(f"[BEWERTUNG] {sym}: keine neuen Käufe (keine Bewertung in diesem Durchgang)")
             return True
-        return self._daily_loss_blocks(sym)
+        return self._daily_loss_blocks(sym) or self._drawdown_blocks(sym)
+
+    def _saved_drawdown(self) -> dict[str, Any] | None:
+        if not self.state_path.exists():
+            return None
+        try:
+            saved = json.loads(self.state_path.read_text()).get("drawdown")
+        except (OSError, json.JSONDecodeError, TypeError):
+            return None
+        return saved if isinstance(saved, dict) else None
+
+    def _apply_saved_drawdown_reset(self) -> None:
+        """Nur eine neue ``reset_id`` löst. ``halted: false`` auf der Platte zählt nicht."""
+        if self.drawdown is None:
+            return
+        saved = self._saved_drawdown()
+        if saved is None:
+            return
+        try:
+            saved_id = int(saved.get("reset_id") or 0)
+        except (TypeError, ValueError):
+            return
+        if saved_id <= self.drawdown.reset_id:
+            return
+        self.drawdown.reset_id = saved_id
+        self.drawdown.reset()
+        self.log(
+            "[DRAWDOWN] Sperre per tradikg live drawdown-reset gelöst. "
+            "Der Höchststand wird auf die jetzige Equity gesetzt. "
+            "Verkäufe und Kraken-Stops waren die ganze Zeit aktiv."
+        )
+
+    def _persist_drawdown_halt(self) -> None:
+        """Sperre sofort auf die Platte, auch im Probelauf, vor dem nächsten Coin.
+
+        Im Probelauf wird nur der Drawdown-Block gemerged. Orders und Kerzen bleiben
+        ungespeichert. Eine neuere ``reset_id`` auf der Platte wird nicht überschrieben.
+        """
+        if self.drawdown is None:
+            return
+        saved = self._saved_drawdown()
+        if saved is not None:
+            try:
+                if int(saved.get("reset_id") or 0) > self.drawdown.reset_id:
+                    return
+            except (TypeError, ValueError):
+                pass
+        self.state.drawdown = self.drawdown.snapshot()
+        if not self.dry_run:
+            self.state.save(self.state_path)
+            return
+        raw: dict[str, Any] = {}
+        if self.state_path.exists():
+            try:
+                loaded = json.loads(self.state_path.read_text())
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except (OSError, json.JSONDecodeError):
+                raw = {}
+        raw["drawdown"] = self.state.drawdown
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(raw, indent=2))
+        tmp.replace(self.state_path)
+
+    def _poll_drawdown(self) -> None:
+        """Höchststand nachziehen. Lösen nur per ``tradikg live drawdown-reset``."""
+        if self.drawdown is None:
+            return
+        self._apply_saved_drawdown_reset()
+        equity = self._account_equity()
+        if equity is None:
+            return  # Höchststand bleibt; Käufe sind für diesen Durchgang schon gesperrt
+        breached = self.drawdown.observe(equity, self._now())
+        self.state.drawdown = self.drawdown.snapshot()
+        if breached:
+            self._persist_drawdown_halt()
+            if not self.dry_run:
+                self._write_drawdown_file(equity)
+            dd = abs(self.drawdown.drawdown_from(equity))
+            self.log(
+                f"[DRAWDOWN] Equity {equity:.2f} € ist {dd:.0%} unter dem Höchststand "
+                f"{self.drawdown.peak_equity:.2f} € (Grenze −{self.cfg.drawdown_fraction:.0%}). "
+                "Keine neuen Käufe, bis die Sperre von Hand gelöst wird "
+                "(tradikg live drawdown-reset). "
+                "Verkäufe und Kraken-Stops laufen weiter."
+            )
+
+    def _write_drawdown_file(self, equity: float) -> None:
+        self.drawdown_file.parent.mkdir(parents=True, exist_ok=True)
+        self.drawdown_file.write_text(
+            "Drawdown-Sperre: keine neuen Käufe.\n"
+            f"Höchststand {self.drawdown.peak_equity:.2f} €, zuletzt {equity:.2f} €, "
+            f"Grenze −{self.cfg.drawdown_fraction:.0%}.\n"
+            "Lösen nur mit: tradikg live drawdown-reset\n"
+            "Diese Datei ist ein Hinweis. Löschen hebt die Sperre nicht auf.\n"
+            "Das ist nicht die Kill-Switch-Datei.\n"
+            "Stops bei Kraken bleiben liegen. Es wird nichts automatisch verkauft.\n"
+        )
+
+    def _drawdown_blocks(self, sym: str) -> bool:
+        if self.drawdown is None or not self.drawdown.halted:
+            return False
+        equity = self._account_equity()
+        if equity is None:
+            self.log(f"[DRAWDOWN] {sym}: keine neuen Käufe (Sperre aktiv)")
+            return True
+        dd = abs(self.drawdown.drawdown_from(equity))
+        self.log(
+            f"[DRAWDOWN] {sym}: keine neuen Käufe "
+            f"({dd:.0%} unter Höchststand {self.drawdown.peak_equity:.2f} €, "
+            "nur manuell lösbar)"
+        )
+        return True
+
+    def _drawdown_snapshot(self) -> dict[str, Any]:
+        if self.drawdown is None:
+            return {"enabled": False, "limit": self.cfg.drawdown_fraction}
+        equity = self._account_equity()
+        if equity is None:
+            return {
+                "enabled": True,
+                "halted": self.drawdown.halted,
+                "limit": self.cfg.drawdown_fraction,
+                "peak_equity": self.drawdown.peak_equity,
+                "equity": None,
+                "drawdown": None,
+                "rebase": self.drawdown.rebase,
+            }
+        return {
+            "enabled": True,
+            "halted": self.drawdown.halted,
+            "limit": self.cfg.drawdown_fraction,
+            "peak_equity": self.drawdown.peak_equity,
+            "equity": equity,
+            "drawdown": self.drawdown.drawdown_from(equity),
+            "rebase": self.drawdown.rebase,
+        }
 
     # -- ein Durchgang -------------------------------------------------------------------------
     def run_once(self) -> LiveState:
@@ -399,6 +588,7 @@ class LiveTrendRunner:
             st = self.state.symbols.setdefault(sym, SymbolState())
             self._sync(sym, st, balances)
             self._poll_daily_loss()
+            self._poll_drawdown()
             closes = self.closes(sym)
             if len(closes) >= self.cfg.sma:
                 self._decide(sym, st, closes, balances)
@@ -430,6 +620,7 @@ class LiveTrendRunner:
             "balances": _balance_map(self._snapshot_balances()),
             "prices": prices,
             "symbols": {s: asdict(v) for s, v in self.state.symbols.items()},
+            "drawdown": self._drawdown_snapshot(),
         }
         tmp = self.snapshot_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(snap, indent=1))
@@ -451,6 +642,7 @@ class LiveTrendRunner:
             st = self.state.symbols.setdefault(sym, SymbolState())
             self._sync(sym, st, balances)
             self._poll_daily_loss()
+            self._poll_drawdown()
             closes = self.closes(sym)
             above = len(closes) >= self.cfg.sma and float(closes.iloc[-1]) > float(
                 closes.iloc[-self.cfg.sma :].mean()

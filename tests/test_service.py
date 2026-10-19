@@ -180,6 +180,23 @@ def test_trend_mode_uses_configured_invest_fraction(tmp_path):
     assert enabled.engine.alloc.cfg.daily_loss_enabled is True
     assert enabled.engine.alloc.cfg.daily_loss_fraction == pytest.approx(0.04)
     assert enabled.engine.alloc.guard is not None
+    assert svc.engine.alloc.drawdown is None
+    assert svc.engine.alloc.cfg.invest_fraction == 0.5
+    drawdown = PaperService(
+        config(
+            tmp_path / "drawdown",
+            strategy_mode="trend",
+            drawdown_enabled=True,
+            drawdown_fraction=0.30,
+        ),
+        api=fake,
+        now=lambda: fake.now,
+    )
+    assert drawdown.engine.alloc.drawdown is not None
+    assert drawdown.engine.alloc.drawdown.limit == pytest.approx(0.30)
+    assert drawdown.engine.alloc.cfg.invest_fraction == 1.0
+    assert drawdown.engine.alloc.drawdown_file is not None
+    assert drawdown.engine.alloc.drawdown_file.name == "DRAWDOWN_HALT"
 
 
 def test_grid_mode_runs_and_restarts(tmp_path, monkeypatch):

@@ -78,6 +78,14 @@ Stops bei Kraken, Kill-Switch, Auszahlungs-Abbruch und die 50-€-Budgetdecke bl
 `DailyLossGuard` im Backtest und `daily_loss_fraction` im Bracket-Pilot (weiter 10 %, mit
 Glattstellung im Backtest) sind davon getrennt.
 
+**Entscheidung von Mirko (19.10.2026, 21:06 Uhr Wien): optionale Drawdown-Sperre.**
+Fällt die Equity des Trend-Bots 45 % unter ihren Höchststand, sind neue Käufe gesperrt, bis
+jemand die Sperre von Hand löst (`tradikg live drawdown-reset`; die Datei `DRAWDOWN_HALT`
+ist nur ein Hinweis, Löschen hebt die Sperre nicht auf – `KILL_SWITCH` bleibt unberührt). −30 % hätte die Strategie 2019 beendet,
+deshalb ist 45 % die weiteste Schwelle und nur enger einstellbar. Im Echtbetrieb ist sie
+standardmäßig **aus**. Es gibt keine Zwangsverkäufe; `invest_fraction` bleibt 1,0. Kill-Switch,
+Auszahlungs-Abbruch, Kraken-Stops und die 50-€-Budgetdecke bleiben unverändert.
+
 Optionen, die zur Wahl standen:
 1. *So lassen*: ≈ 21 % je Position bewusst akzeptieren und die 10-%-Tagesgrenze als „gilt nicht für
    Trendfolge“ dokumentieren.
