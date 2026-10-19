@@ -478,6 +478,7 @@ def test_daily_loss_flag_off_does_not_change_buys_or_state(tmp_path):
     assert not any(line.startswith("[TAGESLIMIT]") for line in logs)
     raw = json.loads((tmp_path / "state.json").read_text())
     assert "daily_loss" not in raw
+    assert "bot_cash_eur" not in raw
     market.day(110, 14)
     run.run_once()
     assert [o for o in fake.open("limit") if o.pair == "ETHEUR"]
@@ -521,6 +522,120 @@ def test_daily_loss_does_not_replace_withdrawal_abort(tmp_path):
     fake.withdraw = True
     with pytest.raises(LiveSafetyError, match="Auszahlungsrechte"):
         runner(tmp_path, fake, market, cfg=_loss_cfg()).run_once()
+
+
+def test_slice_equity_trips_at_five_percent_of_budget_not_of_the_account(tmp_path):
+    """Konto 100 €, Budget 20 €: 5 % sind etwa 1 € der Scheibe, nicht 5 € vom Konto."""
+    logs: list[str] = []
+    clock = {"t": dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)}
+    fake, market = FakeKraken(eur=100.0), Market()
+    market.day(110, 8)
+    run = runner(tmp_path, fake, market, cfg=_loss_cfg(), now=lambda: clock["t"], log=logs.append)
+    run.run_once()
+    assert run.guard is not None
+    assert run.guard.day_start_equity == pytest.approx(20.0, abs=0.05)
+    assert run.state.bot_cash_eur == pytest.approx(20.0)
+    for order in list(fake.open("limit")):
+        if order.pair == "XBTEUR":
+            fake.fill(order.txid)
+    run.run_once()
+    assert run.guard.day_start_equity == pytest.approx(20.0, abs=0.05)
+    assert run.state.bot_cash_eur == pytest.approx(10.0, abs=0.2)
+    units = run.state.symbols["XBTEUR"].units
+    assert units > 0
+    # Kurs so weit runter, dass die Scheibe die 5 % reißt, das 100-€-Konto aber nicht.
+    bot_cash = run.state.bot_cash_eur
+    start = run.guard.day_start_equity
+    target = start * (1 - 0.05) - 0.05  # knapp unter dem Boden von 19 €
+    # Bid = Preis * 0.999, also Preis ≈ (Ziel-Kasse) / Menge / 0.999
+    fake.price["XBTEUR"] = max(1.0, (target - bot_cash) / units / 0.999)
+    run.run_once()
+    equity = run._account_equity()
+    account = fake.bal["ZEUR"] + units * fake.price["XBTEUR"] * 0.999
+    assert equity is not None and equity <= start * (1 - 0.05)
+    assert account > 100 * (1 - 0.05)  # altes Vollkonto wäre noch nicht bei 5 %
+    assert run.guard.halted
+    assert run.guard.day_start_equity == pytest.approx(start)
+
+    cash_before = run.state.bot_cash_eur
+    units_before = run.state.symbols["XBTEUR"].units
+    fake.bal["ZEUR"] += 80  # Einzahlung
+    fake.bal["XXBT"] += 0.02  # manueller Zukauf, nicht die Bot-Menge
+    fake.bal["XETH"] += 0.5
+    fake.bal["ZEUR"] -= 30  # manuell woanders ausgegeben, Scheibe bleibt gedeckt
+    run.run_once()
+    assert run.guard.day_start_equity == pytest.approx(start)
+    assert run.state.bot_cash_eur == pytest.approx(cash_before)
+    assert run.state.symbols["XBTEUR"].units == pytest.approx(units_before)
+    assert run.state.symbols["XBTEUR"].units < fake.bal["XXBT"]
+
+    again = runner(tmp_path, fake, market, cfg=_loss_cfg(), now=lambda: clock["t"], log=logs.append)
+    assert again.state.bot_cash_eur == pytest.approx(cash_before)
+    assert again.guard is not None
+    assert again.guard.day_start_equity == pytest.approx(start)
+    assert again.guard.halted
+
+
+def test_missing_bid_blocks_buys_and_does_not_use_entry_price(tmp_path):
+    logs: list[str] = []
+    clock = {"t": dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)}
+    fake, market = FakeKraken(), Market()
+    market.day(110, 8)
+    run = runner(tmp_path, fake, market, cfg=_loss_cfg(), now=lambda: clock["t"], log=logs.append)
+    run.run_once()
+    for order in list(fake.open("limit")):
+        if order.pair == "XBTEUR":
+            fake.fill(order.txid)
+    run.run_once()
+    assert run.guard is not None and not run.guard.halted
+    start = run.guard.day_start_equity
+    real_book = fake.order_book
+
+    def no_btc_bid(sym, depth=1):
+        book = real_book(sym, depth)
+        if sym == "XBTEUR":
+            return OrderBook(sym, [], book.asks)
+        return book
+
+    fake.order_book = no_btc_bid
+    fake.price["XBTEUR"] = 5.0  # echter Bid würde die Grenze reißen
+    market.day(110, 14)  # ETH will kaufen
+    run.run_once()
+    assert not run.guard.halted  # ohne Bid keine Scheinbewertung zum Einstand oder zu null
+    assert run.guard.day_start_equity == pytest.approx(start)
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+    assert [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    assert any("kein Bid" in line and "Einstandspreis" in line for line in logs)
+
+    fake.order_book = real_book
+    run.run_once()  # selber Tag, diesmal mit Bid: die Grenze gilt
+    assert run.guard.halted
+    assert run.guard.day_start_equity == pytest.approx(start)
+
+
+def test_balance_fetch_error_still_sells_and_keeps_the_stop_path(tmp_path):
+    logs: list[str] = []
+    clock = {"t": dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)}
+    fake, market = FakeKraken(), Market()
+    market.day(110, 8)
+    run = runner(tmp_path, fake, market, cfg=_loss_cfg(), now=lambda: clock["t"], log=logs.append)
+    run.run_once()
+    for order in list(fake.open("limit")):
+        if order.pair == "XBTEUR":
+            fake.fill(order.txid)
+    run.run_once()
+    assert [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+
+    def boom():
+        raise TimeoutError("Kraken balance")
+
+    fake.balances = boom
+    market.day(80, 14)  # BTC unter SMA → Verkauf, ETH über SMA → wäre ein Kauf
+    run.run_once()  # darf nicht abbrechen
+    assert [o for o in fake.orders.values() if o.pair == "XBTEUR" and o.side == OrderSide.SELL]
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR" and o.side == OrderSide.BUY]
+    assert any("Guthaben nicht lesbar" in line for line in logs)
+    assert any("ETHEUR: keine neuen Käufe" in line for line in logs)
 
 
 def test_lost_state_file_never_buys_twice_while_bot_orders_are_open(tmp_path):

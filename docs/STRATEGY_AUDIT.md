@@ -67,9 +67,11 @@ Bei 100 / 500 / 1.000 € skaliert das linear: pessimistisch ≈ 37,5 / 188 / 37
 **Entscheidung des Nutzers (18.10.2026): Option 1.** Der Echtgeld-Bot bleibt zu 100 % investiert; ≈ 21 % Risiko je Position (pessimistisch ≈ 37 % mit Kurslücke) sind bewusst akzeptiert. Die damalige 10-%-Tagesverlust-Grenze des Bracket-Bots galt nicht für die Trendfolge.
 
 **Entscheidung von Mirko (19.10.2026, 21:01 Uhr Wien): ersetzt die Entscheidung vom 18.10. zu Punkt B.**
-Der Trend-Bot bekommt eine eigene Tagesverlustgrenze. Standard sind 5 % der Equity zum Beginn des
-Wiener Tages (00:00 Europe/Vienna) – an einem Konto von etwa 20 € ist das rund 1 € an einem schlechten
-Tag, normale Schwankungen bleiben möglich, die Zahl wird später nachjustiert. Die Grenze ist
+Der Trend-Bot bekommt eine eigene Tagesverlustgrenze. Standard sind 5 % der Bot-Scheibe zum Beginn des
+Wiener Tages (00:00 Europe/Vienna) – an einem Budget von etwa 20 € ist das rund 1 € an einem schlechten
+Tag, normale Schwankungen bleiben möglich, die Zahl wird später nachjustiert. Die Scheibe ist nicht
+das ganze Kraken-Konto: eigene Kasse innerhalb des Budgets plus eigene Coins zum Bid. Einzahlungen
+und manuelle Trades verschieben den Tagesstart nicht. Die Grenze ist
 konfigurierbar, aber nur enger als 10 %, und im Echtbetrieb standardmäßig **aus**. Ist sie an und
 gerissen, werden neue Käufe bis zum nächsten Wiener Tag gesperrt. Es gibt keine Zwangsverkäufe;
 Stops bei Kraken, Kill-Switch, Auszahlungs-Abbruch und die 50-€-Budgetdecke bleiben unverändert.

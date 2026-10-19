@@ -19,11 +19,14 @@ Sicherheit:
   wiederholt, sondern bei Kraken nachgesehen.
 * Abbruch, wenn der API-Key Auszahlungsrechte hat oder Margin-Positionen existieren.
 * Kill-Switch-Datei: keine neuen Käufe, Stops bleiben aktiv.
-* Optionale Tagesverlustgrenze (standardmäßig **aus**): Equity = EUR-Guthaben plus
-  Marktpreis der eigenen Mengen, gegen die Equity zum Beginn des Wiener Tages
-  (00:00 Europe/Vienna). Standard 5 %, höchstens 10 %. Ist sie gerissen, gibt es
-  keine neuen Käufe bis zum nächsten Wiener Tag. Verkäufe und die Stop-Orders bei
-  Kraken laufen unverändert weiter. Es wird nichts zwangsverkauft.
+* Optionale Tagesverlustgrenze (standardmäßig **aus**): Equity = die Scheibe des
+  Bots, nicht das ganze Kraken-Konto. Das ist die mitgeführte Bot-Kasse (zu Beginn
+  höchstens Budget abzüglich des Kaufpreises offener Positionen) plus die eigenen
+  Mengen zum Bid. Einzahlungen und manuelle Trades ändern diese Kasse nicht.
+  Fehlt ein Bid oder das Guthaben, gibt es in diesem Durchgang keine neuen Käufe;
+  Verkäufe und Stops laufen weiter. Standard 5 % der Scheibe zum Beginn des Wiener
+  Tages (00:00 Europe/Vienna), höchstens 10 %. Ist sie gerissen, keine neuen Käufe
+  bis zum nächsten Wiener Tag. Es wird nichts zwangsverkauft.
 * ``dry_run``: Kraken prüft jede Order nur (``validate=true``), nichts wird ausgeführt oder
   gespeichert.
 """
@@ -50,6 +53,16 @@ from tradikg_bot.risk.limits import (
 
 MAX_BUDGET_EUR = 50.0
 KIND = {"buy": 1, "buy_fallback": 2, "stop": 3, "sell": 4, "sell_fallback": 5}
+
+
+def _balance_map(balances) -> dict[str, dict[str, float]]:
+    if not balances:
+        return {}
+    return {
+        asset: {"total": bal.total, "held": bal.held}
+        for asset, bal in balances.items()
+        if bal.total
+    }
 
 
 class LiveSafetyError(RuntimeError):
@@ -108,22 +121,30 @@ class LiveState:
     symbols: dict[str, SymbolState] = field(default_factory=dict)
     # Nur gesetzt, wenn die Tagesverlustgrenze an ist. Sonst fehlt der Schlüssel in der Datei.
     daily_loss: dict[str, Any] | None = None
+    # EUR, die der Bot selbst noch hält. None, solange keine Grenze die Scheibe bewertet.
+    # Einzahlungen und fremde Trades ändern den Wert nicht; nur eigene Käufe und Verkäufe.
+    bot_cash_eur: float | None = None
 
     @classmethod
     def load(cls, path: Path) -> LiveState:
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text())
-        return cls(
+        state = cls(
             {s: SymbolState(**v) for s, v in raw.get("symbols", {}).items()},
             raw.get("daily_loss"),
         )
+        if raw.get("bot_cash_eur") is not None:
+            state.bot_cash_eur = float(raw["bot_cash_eur"])
+        return state
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {"symbols": {s: asdict(v) for s, v in self.symbols.items()}}
         if self.daily_loss is not None:
             payload["daily_loss"] = self.daily_loss
+        if self.bot_cash_eur is not None:
+            payload["bot_cash_eur"] = self.bot_cash_eur
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2))
         tmp.replace(path)  # atomar
@@ -148,6 +169,7 @@ class LiveTrendRunner:
         self.now = now or (lambda: dt.datetime.now(dt.UTC))
         self._fresh = not state_path.exists()
         self.state = LiveState.load(state_path)
+        self._valuation_block = False
         # Aus: kein Guard, keine Zustandsänderung. An: Referenz und Sperre überleben Neustarts.
         self.guard: DailyLossGuard | None = None
         if cfg.daily_loss_enabled:
@@ -244,33 +266,83 @@ class LiveTrendRunner:
             return now.replace(tzinfo=dt.UTC)
         return now
 
-    def _mark(self, sym: str, fallback: float) -> float:
-        """Verkaufsseite (Bid): unrealisierte Verluste zählen konservativ."""
+    def _mark(self, sym: str) -> float | None:
+        """Bid der eigenen Menge. None heißt: keine Bewertung, nicht der Einstandspreis."""
         try:
             bid = self.gw.order_book(sym, 1).best_bid
         except Exception:
-            return fallback
-        return float(bid) if bid else fallback
+            return None
+        if bid is None or float(bid) <= 0:
+            return None
+        return float(bid)
 
-    def _account_equity(self) -> float:
-        """EUR-Guthaben plus Marktpreis der eigenen Mengen (realisiert steckt im Cash)."""
-        balances = self.gw.balances()
-        quote = "ZEUR"
-        if self.cfg.symbols:
-            quote = self.gw.pair_rules(self.cfg.symbols[0]).quote
-        cash = balances[quote].total if quote in balances else 0.0
+    def _equity_needed(self) -> bool:
+        return self.guard is not None or getattr(self, "drawdown", None) is not None
+
+    def _quote_asset(self) -> str:
+        if not self.cfg.symbols:
+            return "ZEUR"
+        return self.gw.pair_rules(self.cfg.symbols[0]).quote
+
+    def _deployed_cost(self) -> float:
+        """Kaufpreis der eigenen Mengen. Offene Kauf-Orders stecken noch in der Bot-Kasse."""
+        return sum(st.units * st.entry_price for st in self.state.symbols.values() if st.units > 0)
+
+    def _ensure_bot_cash(self, balances) -> None:
+        """Legt die Bot-Kasse einmal an: min(Kontostand, Budget abzüglich Kaufpreis)."""
+        if not self._equity_needed() or self.state.bot_cash_eur is not None or balances is None:
+            return
+        quote = self._quote_asset()
+        account = balances[quote].total if quote in balances else 0.0
+        room = max(0.0, self.cfg.budget_eur - self._deployed_cost())
+        self.state.bot_cash_eur = min(max(0.0, account), room)
+
+    def _note_valuation_block(self, why: str) -> None:
+        self._valuation_block = True
+        if getattr(self, "_valuation_logged", False):
+            return
+        self._valuation_logged = True
+        self.log(f"[BEWERTUNG] {why}. Keine neuen Käufe in diesem Durchgang.")
+
+    def _read_balances(self):
+        """None bei einem Lesefehler. Der Durchgang läuft weiter, neue Käufe nicht."""
+        try:
+            balances = self.gw.balances()
+        except Exception as exc:
+            self._note_valuation_block(f"Guthaben nicht lesbar ({exc})")
+            return None
+        self._ensure_bot_cash(balances)
+        return balances
+
+    def _account_equity(self) -> float | None:
+        """Bot-Scheibe: eigene Kasse plus eigene Mengen zum Bid. None = keine Bewertung.
+
+        Das übrige EUR auf dem Konto zählt nicht. Ohne Bid wird der Einstandspreis
+        nicht eingesetzt.
+        """
+        if self.state.bot_cash_eur is None:
+            self._note_valuation_block("Bot-Kasse unbekannt (Guthaben fehlt)")
+            return None
         marked = 0.0
         for sym, st in self.state.symbols.items():
             if st.units <= 0:
                 continue
-            marked += st.units * self._mark(sym, st.entry_price)
-        return cash + marked
+            bid = self._mark(sym)
+            if bid is None:
+                self._note_valuation_block(
+                    f"{sym}: kein Bid, Einstandspreis wird nicht als Kurs eingesetzt"
+                )
+                return None
+            marked += st.units * bid
+        return self.state.bot_cash_eur + marked
 
     def _poll_daily_loss(self) -> None:
         """Aktualisiert die Tagesreferenz. Ausgeschaltet: kein Aufruf, kein Effekt."""
         if self.guard is None:
             return
         equity = self._account_equity()
+        if equity is None:
+            return  # Start-Equity bleibt; Käufe sind für diesen Durchgang schon gesperrt
         previous_day = self.guard.current_day
         breached = self.guard.observe(self._now(), equity)
         self.state.daily_loss = self.guard.snapshot()
@@ -303,6 +375,13 @@ class LiveTrendRunner:
         )
         return True
 
+    def _new_buys_blocked(self, sym: str) -> bool:
+        """Tagesgrenze oder fehlende Bewertung. Verkäufe und Stops prüfen das nicht."""
+        if self._valuation_block:
+            self.log(f"[BEWERTUNG] {sym}: keine neuen Käufe (keine Bewertung in diesem Durchgang)")
+            return True
+        return self._daily_loss_blocks(sym)
+
     # -- ein Durchgang -------------------------------------------------------------------------
     def run_once(self) -> LiveState:
         if self.gw.has_withdrawal_permission():
@@ -312,7 +391,9 @@ class LiveTrendRunner:
         self._refuse_if_state_lost()
         if self.gw.has_margin_positions():
             raise LiveSafetyError("Margin-Positionen vorhanden – der Bot handelt nur Spot")
-        balances = self.gw.balances()
+        self._valuation_block = False
+        self._valuation_logged = False
+        balances = self._read_balances()
         self._eur_used = 0.0
         for sym in self.cfg.symbols:
             st = self.state.symbols.setdefault(sym, SymbolState())
@@ -325,6 +406,13 @@ class LiveTrendRunner:
             self._save()
         self._write_snapshot()
         return self.state
+
+    def _snapshot_balances(self):
+        """Kontostand fürs Dashboard. Ein Lesefehler bricht den Handel nicht ab."""
+        try:
+            return self.gw.balances()
+        except Exception:
+            return {}
 
     def _write_snapshot(self) -> None:
         """Echter Kontostand für das Dashboard (nur lesend; der Schlüssel bleibt im Bot-Prozess)."""
@@ -339,11 +427,7 @@ class LiveTrendRunner:
         snap = {
             "updated": pd.Timestamp.now(tz="UTC").isoformat(),
             "budget_eur": self.cfg.budget_eur,
-            "balances": {
-                a: {"total": b.total, "held": b.held}
-                for a, b in self.gw.balances().items()
-                if b.total
-            },
+            "balances": _balance_map(self._snapshot_balances()),
             "prices": prices,
             "symbols": {s: asdict(v) for s, v in self.state.symbols.items()},
         }
@@ -359,7 +443,9 @@ class LiveTrendRunner:
                 "API-Key hat Auszahlungsrechte – bitte Key ohne Auszahlung anlegen"
             )
         self._refuse_if_state_lost()
-        balances = self.gw.balances()
+        self._valuation_block = False
+        self._valuation_logged = False
+        balances = self._read_balances()
         today = self._now().date().isoformat()
         for sym in self.cfg.symbols:
             st = self.state.symbols.setdefault(sym, SymbolState())
@@ -372,12 +458,14 @@ class LiveTrendRunner:
             if st.units > 0 or not above or st.blocked or self.kill.exists():
                 self.log(f"[JETZT] {sym}: kein Sofortkauf (gekauft, Abwärtstrend, Sperre, Kill)")
                 continue
-            if self._daily_loss_blocks(sym):
+            if self._new_buys_blocked(sym):
                 continue
             if st.buy_txid:
                 self._cancel_and_settle(sym, st, st.buy_txid, "Sofortkauf statt Limit", buy=True)
                 st.buy_txid = None
-                balances = self.gw.balances()  # stornierte Limits geben das Geld wieder frei
+                balances = self._read_balances()  # stornierte Limits geben das Geld wieder frei
+            if balances is None:
+                continue
             rules, book = self.gw.pair_rules(sym), self.gw.order_book(sym, 1)
             eur_free = balances[rules.quote].available if rules.quote in balances else 0.0
             eur = min(self.cfg.slot_eur - st.units * st.entry_price, eur_free)
@@ -400,7 +488,7 @@ class LiveTrendRunner:
                 },
             )
             self._save()
-        balances = self.gw.balances()
+        balances = self._read_balances()
         for sym in self.cfg.symbols:  # Ausführung übernehmen und sofort Stop bei Kraken setzen
             st = self.state.symbols[sym]
             self._sync(sym, st, balances)
@@ -420,6 +508,8 @@ class LiveTrendRunner:
             o = orders.get(txid or "")
             if o and o.status.is_final:
                 self._apply_sell(sym, st, o)
+        if balances is None:
+            return  # Ausführungen sind übernommen; ohne Guthaben keine Bestände kürzen
         base = self.gw.pair_rules(sym).base
         held = balances.get(base).total if base in balances else 0.0
         # Teilverkäufe noch offener eigener Orders werden erst beim Abschluss verbucht
@@ -436,6 +526,9 @@ class LiveTrendRunner:
 
     def _apply_buy(self, sym: str, st: SymbolState, o) -> None:
         if o.filled > 0:
+            spent = o.filled * o.avg_price + o.fee
+            if self.state.bot_cash_eur is not None:
+                self.state.bot_cash_eur = max(0.0, self.state.bot_cash_eur - spent)
             cost = st.units * st.entry_price + o.filled * o.avg_price
             st.units += o.filled
             st.entry_price = cost / st.units
@@ -447,6 +540,9 @@ class LiveTrendRunner:
         is_stop = o.txid == st.stop_txid
         if o.filled > 0:
             pnl = o.filled * (o.avg_price - st.entry_price) - o.fee
+            if self.state.bot_cash_eur is not None:
+                proceeds = o.filled * o.avg_price - o.fee
+                self.state.bot_cash_eur = max(0.0, self.state.bot_cash_eur + proceeds)
             st.realized_eur += pnl
             st.units = max(0.0, st.units - o.filled)
             why = "Notfall-Stop" if is_stop else "Signal"
@@ -499,7 +595,7 @@ class LiveTrendRunner:
                 above
                 and remaining >= self.cfg.dust_eur
                 and not self.kill.exists()
-                and not self._daily_loss_blocks(sym)
+                and not self._new_buys_blocked(sym)
             ):
                 vol = rules.round_volume_down(
                     remaining / (book.best_ask * 1.005 * (1 + KRAKEN_SPOT_TAKER))
@@ -555,7 +651,7 @@ class LiveTrendRunner:
         elif above and not st.blocked and not st.buy_txid:
             if self.kill.exists():
                 self.log(f"[KILL] {sym}: keine neuen Käufe (Kill Switch)")
-            elif self._daily_loss_blocks(sym):
+            elif self._new_buys_blocked(sym):
                 pass  # bereits protokolliert; Verkäufe und Stops oben laufen weiter
             else:
                 self._buy(sym, st, day, close, book, rules, balances)
