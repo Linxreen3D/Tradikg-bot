@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import sys
 
 import pandas as pd
 import pytest
@@ -12,6 +13,7 @@ from tradikg_bot.live.models import (
     Balance,
     ExchangeOrder,
     OrderBook,
+    OrderRejectedError,
     OrderSide,
     OrderStatus,
     OutcomeUnknownError,
@@ -35,6 +37,7 @@ class FakeKraken:
         self.price = {"XBTEUR": 100.0, "ETHEUR": 10.0}
         self.withdraw = False
         self.unknown_next = False
+        self.reject_if = None  # params -> True heißt: Order ablehnen, nichts anlegen
 
     def pair_rules(self, sym):
         return RULES[sym]
@@ -43,13 +46,28 @@ class FakeKraken:
         p = self.price[sym]
         return OrderBook(sym, [(p * 0.999, 1.0)], [(p * 1.001, 1.0)])
 
+    def _asset_of(self, order: ExchangeOrder) -> str:
+        if order.side == OrderSide.BUY:
+            return "ZEUR"
+        return "XXBT" if "XBT" in order.pair else "XETH"
+
+    def _reserved(self, asset: str) -> float:
+        """Wie Kraken ``hold_trade``: Kauf bindet Euro, Verkauf (Limit, Market, Stop) die Basis."""
+        total = 0.0
+        for order in self.orders.values():
+            if order.status != OrderStatus.OPEN or self._asset_of(order) != asset:
+                continue
+            if order.side == OrderSide.BUY:
+                total += order.volume * (order.price or 0)
+            else:
+                total += order.volume - order.filled
+        return total
+
     def balances(self):
-        held = sum(
-            o.volume * (o.price or 0)
-            for o in self.orders.values()
-            if o.status == OrderStatus.OPEN and o.side == OrderSide.BUY
-        )
-        return {a: Balance(a, v, held if a == "ZEUR" else 0.0) for a, v in self.bal.items()}
+        return {
+            a: Balance(a, v, self._reserved(a) if a == "ZEUR" or v else 0.0)
+            for a, v in self.bal.items()
+        }
 
     def has_withdrawal_permission(self):
         return self.withdraw
@@ -61,6 +79,13 @@ class FakeKraken:
         if validate:
             self.validated.append(params)
             return None
+        if self.reject_if and self.reject_if(params):
+            raise OrderRejectedError("EOrder:Orders do not match")
+        if params["type"] == "sell":
+            base = "XXBT" if "XBT" in params["pair"] else "XETH"
+            need = float(params["volume"])
+            if need > self.bal[base] - self._reserved(base) + 1e-9:
+                raise OrderRejectedError("EOrder:Insufficient funds")
         txid = f"T{len(self.orders) + 1}"
         self.orders[txid] = ExchangeOrder(
             txid,
@@ -176,7 +201,7 @@ def test_buy_then_server_side_stop_and_trailing(tmp_path):
     assert stop2.price == pytest.approx(120.0)
 
 
-def test_exit_signal_maker_then_market_fallback_after_partial_fill(tmp_path):
+def test_exit_signal_keeps_stop_then_market_sells_remainder(tmp_path):
     fake, m = FakeKraken(), Market()
     m.day(110)
     r = runner(tmp_path, fake, m)
@@ -184,16 +209,21 @@ def test_exit_signal_maker_then_market_fallback_after_partial_fill(tmp_path):
     buy = next(o for o in fake.open() if o.pair == "XBTEUR")
     fake.fill(buy.txid)
     r.run_once()
-    m.day(90)  # unter SMA → Stop stornieren, Verkauf-Limit post-only
+    m.day(90)  # unter SMA → Stop bleibt, kein ruhendes Verkaufs-Limit
     r.run_once()
-    assert not [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
-    (sell,) = [o for o in fake.open("limit") if o.pair == "XBTEUR"]
-    assert fake.params[sell.txid]["oflags"] == "post" and sell.side == OrderSide.SELL
-    fake.fill(sell.txid, volume=sell.volume / 2, close=False)  # nur halb ausgeführt
-    m.day(85)
+    (stop,) = [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    assert not [o for o in fake.open("limit") if o.pair == "XBTEUR" and o.side == OrderSide.SELL]
+    assert r.state.symbols["XBTEUR"].sell_day
+    m.day(85)  # nächster Tagesschluss: Stop lösen, Market-Verkauf der Restmenge
     r.run_once()
+    assert fake.orders[stop.txid].status == OrderStatus.CANCELED
     (mkt,) = [o for o in fake.open("market") if o.pair == "XBTEUR"]
-    assert mkt.volume == pytest.approx(buy.volume / 2)  # nie mehr als die eigene Restmenge
+    assert mkt.volume == pytest.approx(buy.volume)
+    fake.fill(mkt.txid, volume=mkt.volume / 2, close=False)
+    m.day(80)
+    r.run_once()
+    (rest,) = [o for o in fake.open("market") if o.pair == "XBTEUR"]
+    assert rest.volume == pytest.approx(buy.volume / 2)  # nie mehr als die eigene Restmenge
 
 
 def test_stop_trigger_blocks_until_fresh_cross(tmp_path):
@@ -636,6 +666,171 @@ def test_balance_fetch_error_still_sells_and_keeps_the_stop_path(tmp_path):
     assert not [o for o in fake.orders.values() if o.pair == "ETHEUR" and o.side == OrderSide.BUY]
     assert any("Guthaben nicht lesbar" in line for line in logs)
     assert any("ETHEUR: keine neuen Käufe" in line for line in logs)
+
+
+def _protection(fake: FakeKraken, r: LiveTrendRunner, sym: str) -> tuple[bool, str]:
+    st = r.state.symbols[sym]
+    stops = [o for o in fake.open("stop-loss") if o.pair == sym]
+    sells = [
+        o
+        for o in fake.open()
+        if o.pair == sym and o.side == OrderSide.SELL and o.ordertype != "stop-loss"
+    ]
+    protected = st.units <= 1e-12 or bool(stops) or bool(sells)
+    stop_txt = ",".join(f"{o.price:.2f}×{o.volume:.8f}" for o in stops) or "–"
+    sell_txt = ",".join(f"{o.ordertype}:{o.volume:.8f}" for o in sells) or "–"
+    line = (
+        f"{sym} close={float(r.closes(sym).iloc[-1]):.2f} units={st.units:.8f} "
+        f"stop={stop_txt} sell={sell_txt} protected={'yes' if protected else 'NO'}"
+    )
+    return protected, line
+
+
+def test_rejected_market_exit_restores_the_stop(tmp_path):
+    logs: list[str] = []
+    fake, m = FakeKraken(), Market()
+    m.day(110)
+    r = runner(tmp_path, fake, m)
+    r.log = logs.append
+    r.run_once()
+    for order in list(fake.open("limit")):
+        fake.fill(order.txid)
+    r.run_once()
+    m.day(90)  # Signal: Stop bleibt
+    r.run_once()
+    assert len(fake.open("stop-loss")) == 2
+    fake.reject_if = lambda params: params.get("ordertype") == "market"
+    m.day(85)
+    r.run_once()
+    assert not fake.open("market")
+    assert {o.pair for o in fake.open("stop-loss")} == {"XBTEUR", "ETHEUR"}
+    assert any("ALARM" in line and "Market-Ausstieg" in line for line in logs)
+    assert r.state.symbols["XBTEUR"].stop_txid
+    assert r.state.symbols["XBTEUR"].sell_day  # Ausstieg bleibt vorgemerkt
+
+
+def test_market_exit_keeps_the_stop_when_cancel_does_not_remove_it(tmp_path):
+    logs: list[str] = []
+    fake, m = FakeKraken(), Market()
+    m.day(110)
+    r = runner(tmp_path, fake, m)
+    r.log = logs.append
+    r.run_once()
+    for order in list(fake.open("limit")):
+        fake.fill(order.txid)
+    r.run_once()
+    m.day(90)
+    r.run_once()
+    stops = {o.pair: o.txid for o in fake.open("stop-loss")}
+    fake.cancel_order = lambda txid: None  # Börse lässt den Stop liegen
+    m.day(85)
+    r.run_once()
+    assert not fake.open("market")
+    assert {o.pair: o.txid for o in fake.open("stop-loss")} == stops
+    assert r.state.symbols["XBTEUR"].stop_txid == stops["XBTEUR"]
+    assert any("ließ sich nicht lösen" in line for line in logs)
+
+
+def test_resting_limit_sell_is_replaced_by_a_stop_on_the_next_pass(tmp_path):
+    """Alter Zustand: Post-only liegt, Stop ist weg. Nächster Durchgang macht das rückgängig."""
+    fake, m = _bought(tmp_path)
+    r = runner(tmp_path, fake, m)
+    st = r.state.symbols["XBTEUR"]
+    stop = next(o for o in fake.open("stop-loss") if o.pair == "XBTEUR")
+    fake.cancel_order(stop.txid)
+    limit = fake.add_order(
+        {
+            "pair": "XBTEUR",
+            "userref": 1,
+            "type": "sell",
+            "ordertype": "limit",
+            "oflags": "post",
+            "price": "100.0",
+            "volume": f"{stop.volume:.8f}",
+        }
+    )
+    st.stop_txid, st.stop_price, st.stop_units = None, 0.0, 0.0
+    st.sell_txid, st.sell_day = limit, st.last_candle
+    r.run_once()  # gleicher Tag: _decide kehrt sofort zurück
+    assert fake.orders[limit].status == OrderStatus.CANCELED
+    (restored,) = [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    assert restored.volume == pytest.approx(stop.volume)
+    assert r.state.symbols["XBTEUR"].stop_txid == restored.txid
+    eth = next(o for o in fake.open("stop-loss") if o.pair == "ETHEUR")
+    assert eth.txid  # der andere Stop wurde nicht angetastet
+
+
+def test_paper_replay_exit_never_ends_a_cycle_without_protection(tmp_path, capsys):
+    """Mehrtagelauf gegen die Scheinbörse. Am Ende jedes Durchgangs liegt ein Stop oder
+    ein Market-Verkauf, solange noch eine Menge offen ist."""
+    logs: list[str] = []
+    fake, m = FakeKraken(), Market()
+    r = runner(tmp_path, fake, m)
+    r.log = logs.append
+    transcript: list[str] = []
+
+    def step(title: str) -> None:
+        r.run_once()
+        lines = [title]
+        for sym in r.cfg.symbols:
+            ok, line = _protection(fake, r, sym)
+            assert ok, line
+            lines.append("  " + line)
+        transcript.append("\n".join(lines))
+
+    m.day(110)
+    r.run_once()  # Kauf-Limits, noch keine Position
+    for order in list(fake.open("limit")):
+        fake.fill(order.txid)
+    step("nach Kauf und Stop")
+    m.day(130)
+    step("höherer Schluss, Stop nachgezogen")
+    m.day(120)  # nicht mehr über SMA, aber über dem Stop (20 % unter 130)
+    step("Verkaufssignal – Stop bleibt, kein Post-only")
+    assert all(st.sell_day for st in r.state.symbols.values())
+    assert not [o for o in fake.open("limit") if o.side == OrderSide.SELL]
+
+    # Alter Fehlerzustand mitten am Tag: Limit ohne Stop. Der nächste Durchgang heilt ihn.
+    st = r.state.symbols["XBTEUR"]
+    live_stop = next(o for o in fake.open("stop-loss") if o.pair == "XBTEUR")
+    fake.cancel_order(live_stop.txid)
+    naked = fake.add_order(
+        {
+            "pair": "XBTEUR",
+            "userref": 99,
+            "type": "sell",
+            "ordertype": "limit",
+            "oflags": "post",
+            "price": "120.0",
+            "volume": f"{live_stop.volume:.8f}",
+        }
+    )
+    st.stop_txid, st.stop_price, st.stop_units = None, 0.0, 0.0
+    st.sell_txid = naked
+    step("geheilt: Limit ohne Stop wieder mit Stop ersetzt")
+    assert fake.orders[naked].status == OrderStatus.CANCELED
+
+    fake.reject_if = lambda params: params.get("ordertype") == "market"
+    m.day(115)
+    step("Market-Ausstieg abgelehnt – Stop im selben Durchgang zurück")
+    assert not fake.open("market")
+    assert any("ALARM" in line and "Market-Ausstieg" in line for line in logs)
+    fake.reject_if = None
+    m.day(112)
+    step("nächster Tag: Market-Verkauf, Stop erst unmittelbar davor gelöst")
+    assert {o.pair for o in fake.open("market")} == {"XBTEUR", "ETHEUR"}
+    assert not fake.open("stop-loss")
+    for order in list(fake.open("market")):
+        fake.fill(order.txid)
+    step("Market ausgeführt – flat, kein Stop nötig")
+    assert all(st.units == 0 for st in r.state.symbols.values())
+
+    print("PAPER REPLAY (Scheinbörse, kein Netz)")
+    print("\n\n".join(transcript))
+    captured = capsys.readouterr().out
+    assert "protected=yes" in captured
+    assert "protected=NO" not in captured
+    print(captured, file=sys.stderr, end="")
 
 
 def test_lost_state_file_never_buys_twice_while_bot_orders_are_open(tmp_path):
