@@ -164,6 +164,22 @@ def test_trend_mode_uses_configured_invest_fraction(tmp_path):
     svc = PaperService(cfg, api=fake, now=lambda: fake.now)
     assert svc.engine.alloc.cfg.invest_fraction == 0.5
     assert svc.engine.alloc.cfg.cash_yield_pa == 0.01
+    assert svc.engine.alloc.cfg.daily_loss_enabled is False
+    assert svc.engine.alloc.guard is None
+    enabled = PaperService(
+        config(
+            tmp_path / "enabled",
+            strategy_mode="trend",
+            daily_loss_enabled=True,
+            daily_loss_fraction=0.04,
+            daily_loss_timezone="Europe/Vienna",
+        ),
+        api=fake,
+        now=lambda: fake.now,
+    )
+    assert enabled.engine.alloc.cfg.daily_loss_enabled is True
+    assert enabled.engine.alloc.cfg.daily_loss_fraction == pytest.approx(0.04)
+    assert enabled.engine.alloc.guard is not None
 
 
 def test_grid_mode_runs_and_restarts(tmp_path, monkeypatch):

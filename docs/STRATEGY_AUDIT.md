@@ -27,7 +27,7 @@ Gefundene Schwachstellen und was damit passiert ist:
 | # | Befund | Schwere | Status |
 |---|---|---|---|
 | A | Echtgeld-Bot: Geht die Zustandsdatei verloren, während Stops bei Kraken offen sind, hätte der Bot beim nächsten Tagessignal **ein zweites Mal gekauft** (Budget doppelt) und die alte Position nicht mehr per Signal verkauft. | hoch (selten) | **behoben im Branch** (Bot hält mit Fehlermeldung an), Test |
-| B | Die 10-%-Tagesverlust-Schwelle gilt nur für den alten Signal-Bot. Der Trend-Bot hat keine Tagesgrenze; sein echtes Risiko ist ≈ 21 % je Position, bei Kurslücke bis ≈ 37 %. | mittel | **entschieden**: 100 % bleibt, ≈ 21 % akzeptiert, Grenze gilt nicht für Trendfolge |
+| B | Die 10-%-Tagesverlust-Schwelle (`DailyLossGuard` / `daily_loss_fraction`) gilt nur für den Bracket-Pilot und die Backtests. Der Trend-Bot hatte keine Tagesgrenze; sein Positionsrisiko bleibt ≈ 21 % (Kurslücke bis ≈ 37 %). | mittel | **neu entschieden 19.10.2026, 21:01 Uhr Wien (Mirko)** – ersetzt die Entscheidung vom 18.10. Optionale Tagesverlustgrenze: Standard 5 % der Equity zum Tagesbeginn, Reset 00:00 Europe/Vienna, im Echtbetrieb standardmäßig **aus**, höchstens 10 % (nur enger). Bei Erreichen nur neue Käufe gesperrt; keine Zwangsverkäufe, Kraken-Stops bleiben. |
 | C | Copy-Simulation nimmt 10 s Verzögerung an; unser Sammler sieht Trades erst nach ≥ 100 s (Median). Damit sinkt das Ergebnis von +3,0 % auf −0,2 %. | hoch für die Aussagekraft | gemessen, Punkt 6 |
 | D | Copy-Simulation: Ausstieg zum letzten bekannten Preis, wenn ein Pool nicht mehr erfasst wird; Rug Pulls, Verkaufssperren und MEV sind nicht modelliert. | mittel | dokumentiert, Kennzahlen im Bericht |
 | E | Trendfolge: Die Sperre „nach Stop erst neues Kreuzen von unten“ hielt den Bot in Bullenjahren fast komplett draußen (2017: 7 % investiert, 2021: 24 %). | Hypothese | **nicht geändert** – nur auf getrennten Daten testen |
@@ -36,11 +36,12 @@ Gefundene Schwachstellen und was damit passiert ist:
 
 ## 1. Portfolio-Risiko (Echtgeld-Trendfolge)
 
-**Die 10-%-Tagesgrenze und der 20-%-Stop passen nicht zusammen, weil sie zu verschiedenen Bots
-gehören.** `daily_loss_limit = 0.10` steht in `config.py` / `live/config.py` und wird nur vom
-Signal-Backtest und dem alten Bracket-Bot genutzt. Der Trend-Bot (`live/trend_live.py`) kennt keine
-Tagesgrenze. Eine Tagesgrenze würde dort auch wenig schützen: Der Bot entscheidet nur einmal am Tag,
-der Schutz innerhalb des Tages ist der Stop bei Kraken.
+**Die alte 10-%-Tagesgrenze und der 20-%-Stop gehören zu verschiedenen Bots.** `daily_loss_limit = 0.10`
+steht in `config.py` / `live/config.py` und wird nur vom Signal-Backtest und dem alten Bracket-Bot
+genutzt. Der Trend-Bot (`live/trend_live.py`) hatte bis zum 19.10.2026 keine eigene Tagesgrenze.
+Seit der Entscheidung vom 19.10.2026, 21:01 Uhr Wien, hat er eine **optionale** Grenze (Standard
+5 % der Equity zum Tagesbeginn, Reset 00:00 Europe/Vienna, im Echtbetrieb aus, höchstens 10 %).
+Sie sperrt nur neue Käufe. Der Schutz innerhalb des Tages bleibt der Stop bei Kraken.
 
 | Ebene | Wert | Herleitung |
 |---|---|---|
@@ -63,7 +64,19 @@ Deine 19 € konkret (Stops 58.451,60 € und 1.725,48 € = je 20 % unter Kauf)
 
 Bei 100 / 500 / 1.000 € skaliert das linear: pessimistisch ≈ 37,5 / 188 / 375 €.
 
-**Entscheidung des Nutzers (18.10.2026): Option 1.** Der Echtgeld-Bot bleibt zu 100 % investiert; ≈ 21 % Risiko je Position (pessimistisch ≈ 37 % mit Kurslücke) sind bewusst akzeptiert. **Die 10-%-Tagesverlust-Grenze gilt nicht für die Trendfolge**, nur für den Signal-/Bracket-Bot.
+**Entscheidung des Nutzers (18.10.2026): Option 1.** Der Echtgeld-Bot bleibt zu 100 % investiert; ≈ 21 % Risiko je Position (pessimistisch ≈ 37 % mit Kurslücke) sind bewusst akzeptiert. Die damalige 10-%-Tagesverlust-Grenze des Bracket-Bots galt nicht für die Trendfolge.
+
+**Entscheidung von Mirko (19.10.2026, 21:01 Uhr Wien): ersetzt die Entscheidung vom 18.10. zu Punkt B.**
+Der Trend-Bot bekommt eine eigene Tagesverlustgrenze. Standard sind 5 % der Bot-Scheibe zum Beginn des
+Wiener Tages (00:00 Europe/Vienna) – an einem Budget von etwa 20 € ist das rund 1 € an einem schlechten
+Tag, normale Schwankungen bleiben möglich, die Zahl wird später nachjustiert. Die Scheibe ist nicht
+das ganze Kraken-Konto: eigene Kasse innerhalb des Budgets plus eigene Coins zum Bid. Einzahlungen
+und manuelle Trades verschieben den Tagesstart nicht. Die Grenze ist
+konfigurierbar, aber nur enger als 10 %, und im Echtbetrieb standardmäßig **aus**. Ist sie an und
+gerissen, werden neue Käufe bis zum nächsten Wiener Tag gesperrt. Es gibt keine Zwangsverkäufe;
+Stops bei Kraken, Kill-Switch, Auszahlungs-Abbruch und die 50-€-Budgetdecke bleiben unverändert.
+`DailyLossGuard` im Backtest und `daily_loss_fraction` im Bracket-Pilot (weiter 10 %, mit
+Glattstellung im Backtest) sind davon getrennt.
 
 Optionen, die zur Wahl standen:
 1. *So lassen*: ≈ 21 % je Position bewusst akzeptieren und die 10-%-Tagesgrenze als „gilt nicht für

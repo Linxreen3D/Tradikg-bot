@@ -25,6 +25,12 @@ from typing import Any
 import pandas as pd
 
 from tradikg_bot.costs import KRAKEN_SPOT_MAKER, KRAKEN_SPOT_TAKER
+from tradikg_bot.risk.limits import (
+    TREND_DAILY_LOSS_FRACTION,
+    TREND_DAILY_LOSS_TIMEZONE,
+    DailyLossGuard,
+    validate_trend_daily_loss,
+)
 
 STRATEGY = "trend_sma200"
 
@@ -41,6 +47,15 @@ class TrendConfig:
     cash_yield_pa: float = (
         0.0  # Zins auf nicht investiertes Geld – nur setzen, wenn er real gezahlt wird
     )
+    # Dieselbe Tagesverlustgrenze wie im Echtgeld-Bot. Standard aus, damit bestehende
+    # Paper-Läufe und Replays sich nicht ändern. An: nur neue Käufe sperren, keine
+    # Zwangsverkäufe, Notfall-Stops bleiben.
+    daily_loss_enabled: bool = False
+    daily_loss_fraction: float = TREND_DAILY_LOSS_FRACTION
+    daily_loss_timezone: str = TREND_DAILY_LOSS_TIMEZONE
+
+    def __post_init__(self) -> None:
+        validate_trend_daily_loss(self.daily_loss_fraction, self.daily_loss_timezone)
 
 
 @dataclass
@@ -60,6 +75,7 @@ class TrendState:
     pending: dict[str, dict[str, Any]] = field(default_factory=dict)  # side, limit, eur
     blocked: dict[str, bool] = field(default_factory=dict)  # nach Notfall-Stop
     trade_seq: int = 0
+    daily_loss: dict[str, Any] | None = None  # Guard-Zustand, nur wenn die Grenze an ist
 
     def to_json(self) -> dict[str, Any]:
         d = asdict(self)
@@ -88,6 +104,13 @@ class TrendAllocator:
         self.symbols, self.capital, self.min_order = list(symbols), capital, min_order
         self.cfg = cfg or TrendConfig()
         self.state = state or TrendState(cash=capital)
+        self.guard: DailyLossGuard | None = None
+        if self.cfg.daily_loss_enabled:
+            self.guard = DailyLossGuard.restore(
+                self.state.daily_loss,
+                limit=self.cfg.daily_loss_fraction,
+                timezone=self.cfg.daily_loss_timezone,
+            )
 
     # -- Bewertung -----------------------------------------------------------------------------
     def open_count(self) -> int:
@@ -114,6 +137,10 @@ class TrendAllocator:
         st.cash *= 1 + cfg.cash_yield_pa / 365  # tägliche Verzinsung des Cash-Anteils (1d)
         closed: list[dict[str, Any]] = []
         log: list[dict[str, Any]] = []
+        # Referenz ist die Equity vor dieser Kerze (letzter Schluss). Die Kerze selbst
+        # zählt danach als Tages-PnL, auch wenn sie die erste des Wiener Tages ist.
+        if self.guard is not None:
+            self._roll_daily_loss(ts, closes)
         for sym in self.symbols:
             bar = bars.get(sym)
             if bar is None:
@@ -161,8 +188,9 @@ class TrendAllocator:
                 st.pending[sym] = {"side": "sell", "limit": bar.close}
                 log.append(self._log(ts, sym, sma, bar.close, "exit", "Schluss unter SMA 200"))
             elif sym not in st.positions and above:
-                if st.blocked.get(sym) or block_entries:
-                    why = block_entries or "Sperre nach Notfall-Stop"
+                loss_block = self._loss_block_reason(closes) if self.guard is not None else None
+                if st.blocked.get(sym) or block_entries or loss_block:
+                    why = loss_block or block_entries or "Sperre nach Notfall-Stop"
                     log.append(self._log(ts, sym, sma, bar.close, "rejected", why))
                     continue
                 slot = self.equity(_last(closes)) * cfg.invest_fraction / len(self.symbols)
@@ -182,7 +210,42 @@ class TrendAllocator:
                     continue
                 st.pending[sym] = {"side": "buy", "limit": bar.close, "eur": eur}
                 log.append(self._log(ts, sym, sma, bar.close, "entry", "Schluss über SMA 200"))
+        if self.guard is not None:
+            # Auch ohne Kaufversuch festhalten (Neustart muss die Sperre wiederfinden).
+            self._loss_block_reason(closes)
         return closed, log
+
+    def _marks(self, closes: dict[str, pd.Series], *, lag: int = 0) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for sym, series in closes.items():
+            if len(series) > lag:
+                out[sym] = float(series.iloc[-1 - lag])
+            elif len(series):
+                out[sym] = float(series.iloc[-1])
+        return out
+
+    def _roll_daily_loss(self, ts: pd.Timestamp, closes: dict[str, pd.Series]) -> None:
+        assert self.guard is not None
+        when = ts.to_pydatetime()
+        day = self.guard.trading_day(when)
+        if self.guard.current_day != day:
+            self.guard.start_day(day, self.equity(self._marks(closes, lag=1)))
+        self.state.daily_loss = self.guard.snapshot()
+
+    def _loss_block_reason(self, closes: dict[str, pd.Series]) -> str | None:
+        """Prüft die Equity zum aktuellen Schluss. None, wenn neue Käufe erlaubt sind."""
+        assert self.guard is not None
+        equity = self.equity(_last(closes))
+        self.guard.check(equity)
+        self.state.daily_loss = self.guard.snapshot()
+        if not self.guard.halted:
+            return None
+        pnl = equity - self.guard.day_start_equity
+        return (
+            f"Tagesverlustgrenze {self.cfg.daily_loss_fraction:.0%} "
+            f"({pnl:+.2f} € ggü. {self.guard.day_start_equity:.2f} € zum Tagesbeginn, "
+            f"bis 00:00 {self.cfg.daily_loss_timezone})"
+        )
 
     def _close(self, sym: str, px: float, fee_rate: float, ts: pd.Timestamp, reason: str):
         st = self.state

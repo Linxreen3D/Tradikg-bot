@@ -61,6 +61,7 @@ def _runner(args: argparse.Namespace, dry_run: bool):
         load_credentials(), nonce_source=journal.next_nonce, allow_trading=not dry_run
     )
     market = KrakenMarketData(KrakenClient(), SQLiteStore(cfg.market_db))
+    # Tagesverlustgrenze bleibt aus (daily_loss_enabled ist standardmäßig False).
     tcfg = LiveTrendConfig(budget_eur=args.budget, invest_fraction=args.invest_fraction)
 
     def closes(sym: str) -> pd.Series:

@@ -38,7 +38,9 @@ class RiskConfig:
 
     risk_per_trade: float = 0.01
     max_position_fraction: float = 0.5
-    daily_loss_limit: float = 0.10  # nur Signal-/Bracket-Bot; gilt nicht für die Trendfolge
+    daily_loss_limit: float = (
+        0.10  # nur Signal-/Bracket-Backtest; die Trendfolge hat ein eigenes Flag
+    )
     min_reward_risk_after_costs: float = 1.0
 
     def __post_init__(self) -> None:

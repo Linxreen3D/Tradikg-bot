@@ -74,9 +74,16 @@ das beim nächsten Durchgang ab und verkauft nie mehr, als er selbst gekauft hat
 ## Grenzen
 
 - **Risiko je Position ≈ 21 %** (Stop 20 % unter Kauf bzw. Höchststand + Gebühren), bei einer
-  Kurslücke im Extremfall ≈ 37 % (gemessen: ETH-Flash-Crash 02.08.2020). Vom Nutzer am 18.10.2026
-  bewusst so gewählt (100 % investiert). **Die 10-%-Tagesverlust-Grenze gilt nicht für die
-  Trendfolge**, nur für den Signal-/Bracket-Bot. Details: `docs/STRATEGY_AUDIT.md`, Punkt 1.
+  Kurslücke im Extremfall ≈ 37 % (gemessen: ETH-Flash-Crash 02.08.2020). 100 % investiert bleibt.
+  Die 10-%-Grenze von Backtest und Bracket-Pilot gilt weiter nicht für diesen Bot. Seit dem
+  19.10.2026, 21:01 Uhr Wien (Mirko, ersetzt die Entscheidung vom 18.10.) gibt es eine **eigene,
+  standardmäßig ausgeschaltete** Tagesverlustgrenze: 5 % der Bot-Scheibe zum Tagesbeginn, Reset
+  00:00 Europe/Vienna, höchstens 10 %. Die Scheibe ist die Kasse des Bots (höchstens das Budget,
+  danach nur noch eigene Käufe und Verkäufe) plus die eigenen Coins zum Bid. Das übrige
+  Kraken-Guthaben, Einzahlungen und manuelle Trades zählen nicht. Eingeschaltet sperrt sie nur
+  neue Käufe; Stops bei Kraken bleiben. Fehlt der Kurs oder das Guthaben, gibt es in diesem
+  Durchgang keine neuen Käufe, Verkäufe und Stops laufen weiter. Details:
+  `docs/STRATEGY_AUDIT.md`, Punkt B.
 - Budget fest 20 € (technisch höchstens 50 €), nur BTC/ETH, nur Spot, kein Hebel.
 - Ohne laufenden Mac keine neuen Entscheidungen; der Stop bei Kraken schützt trotzdem.
 - Gebühren laut öffentlicher Kraken-Seite (Stufe 1); dein Konto kann abweichen.

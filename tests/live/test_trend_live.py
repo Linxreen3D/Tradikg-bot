@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import json
+
 import pandas as pd
 import pytest
 
@@ -131,7 +134,7 @@ class Market:
 CFG = LiveTrendConfig(budget_eur=20.0, invest_fraction=1.0, sma=3)
 
 
-def runner(tmp_path, fake, market, dry_run=False, cfg=CFG):
+def runner(tmp_path, fake, market, dry_run=False, cfg=CFG, now=None, log=None):
     return LiveTrendRunner(
         fake,
         tmp_path / "state.json",
@@ -139,7 +142,8 @@ def runner(tmp_path, fake, market, dry_run=False, cfg=CFG):
         market,
         tmp_path / "KILL",
         dry_run=dry_run,
-        log=lambda m: None,
+        log=log or (lambda m: None),
+        now=now,
     )
 
 
@@ -390,6 +394,248 @@ def test_timeout_while_cancelling_stop_leaves_a_stop_after_next_run(tmp_path):
     fake.cancel_order = real_cancel
     runner(tmp_path, fake, m).run_once()
     assert {o.pair for o in fake.open("stop-loss")} == {"XBTEUR", "ETHEUR"}
+
+
+def _loss_cfg(**overrides):
+    params = dict(
+        budget_eur=20.0,
+        invest_fraction=1.0,
+        sma=3,
+        daily_loss_enabled=True,
+        daily_loss_fraction=0.05,
+        daily_loss_timezone="Europe/Vienna",
+    )
+    params.update(overrides)
+    return LiveTrendConfig(**params)
+
+
+def _btc_position_then_drop(tmp_path, *, price: float, enabled: bool = True):
+    """BTC gekauft und gestoppt, ETH noch unter dem Schnitt. Danach fällt der BTC-Kurs."""
+    logs: list[str] = []
+    # 19.10.2026 ist noch Sommerzeit: 10:00 UTC = 12:00 Wien.
+    clock = {"t": dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)}
+    cfg = _loss_cfg(daily_loss_enabled=enabled)
+    fake, market = FakeKraken(), Market()
+    market.day(110, 8)  # BTC über SMA, ETH darunter → nur BTC wird gekauft
+    run = runner(tmp_path, fake, market, cfg=cfg, now=lambda: clock["t"], log=logs.append)
+    run.run_once()
+    for order in list(fake.open("limit")):
+        if order.pair == "XBTEUR":
+            fake.fill(order.txid)
+    run.run_once()
+    assert [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    fake.price["XBTEUR"] = price
+    run.run_once()
+    return fake, market, run, clock, logs
+
+
+def test_daily_loss_config_is_off_by_default_and_cannot_loosen_past_10_percent():
+    cfg = LiveTrendConfig()
+    assert cfg.daily_loss_enabled is False
+    assert cfg.daily_loss_fraction == pytest.approx(0.05)
+    assert cfg.daily_loss_timezone == "Europe/Vienna"
+    assert cfg.budget_eur == 20.0 and cfg.stop_frac == pytest.approx(0.20)
+    LiveTrendConfig(daily_loss_fraction=0.10)  # Obergrenze, nicht darüber
+    with pytest.raises(LiveSafetyError, match="0.10"):
+        LiveTrendConfig(daily_loss_fraction=0.11)
+    with pytest.raises(LiveSafetyError, match="50"):
+        LiveTrendConfig(budget_eur=50.01)
+
+
+def test_daily_loss_hit_blocks_buys_but_stop_and_sell_still_work(tmp_path):
+    fake, market, run, clock, logs = _btc_position_then_drop(tmp_path, price=70.0)
+    assert run.guard is not None and run.guard.halted
+    assert run.guard.day_start_equity == pytest.approx(20.0, abs=0.05)
+    stop = next(o for o in fake.open("stop-loss") if o.pair == "XBTEUR")
+    assert stop.status == OrderStatus.OPEN  # die Grenze selbst storniert den Stop nicht
+    assert any("Keine neuen Käufe" in line and "Kraken-Stops" in line for line in logs)
+
+    market.day(110, 14)  # selber Wiener Tag: ETH will kaufen, BTC bleibt über dem Schnitt
+    run.run_once()
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+    assert [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]  # Stop bleibt bei Kraken
+    assert any("ETHEUR: keine neuen Käufe" in line for line in logs)
+    run.buy_now()  # Sofortkauf ist auch ein neuer Kauf
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+
+    market.day(80, 14)  # BTC unter SMA → Verkauf, ETH-Kauf bleibt gesperrt
+    run.run_once()
+    assert [o for o in fake.orders.values() if o.pair == "XBTEUR" and o.side == OrderSide.SELL]
+    assert not [o for o in fake.open() if o.pair == "ETHEUR" and o.side == OrderSide.BUY]
+
+
+def test_daily_loss_not_hit_still_buys(tmp_path):
+    fake, market, run, _clock, _logs = _btc_position_then_drop(tmp_path, price=108.0)
+    assert run.guard is not None and not run.guard.halted
+    market.day(110, 14)
+    run.run_once()
+    assert [o for o in fake.open("limit") if o.pair == "ETHEUR" and o.side == OrderSide.BUY]
+
+
+def test_daily_loss_flag_off_does_not_change_buys_or_state(tmp_path):
+    fake, market, run, _clock, logs = _btc_position_then_drop(tmp_path, price=70.0, enabled=False)
+    assert run.guard is None
+    assert not any(line.startswith("[TAGESLIMIT]") for line in logs)
+    raw = json.loads((tmp_path / "state.json").read_text())
+    assert "daily_loss" not in raw
+    assert "bot_cash_eur" not in raw
+    market.day(110, 14)
+    run.run_once()
+    assert [o for o in fake.open("limit") if o.pair == "ETHEUR"]
+
+
+def test_daily_loss_persists_across_restart_and_resets_at_vienna_midnight(tmp_path):
+    fake, market, run, clock, logs = _btc_position_then_drop(tmp_path, price=70.0)
+    assert run.guard is not None and run.guard.halted
+    start_equity = run.guard.day_start_equity
+    halted_day = run.guard.current_day
+
+    again = runner(
+        tmp_path,
+        fake,
+        market,
+        cfg=_loss_cfg(),
+        now=lambda: clock["t"],
+        log=logs.append,
+    )
+    assert again.guard is not None
+    assert again.guard.halted
+    assert again.guard.current_day == halted_day
+    assert again.guard.day_start_equity == pytest.approx(start_equity)
+    market.day(112, 15)  # neuer Kerzentag, aber noch derselbe Wiener Tag
+    again.run_once()
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+
+    # 19.10.2026 ist CEST (UTC+2): 22:30 UTC = 20.10. 00:30 Wien.
+    clock["t"] = dt.datetime(2026, 10, 19, 22, 30, tzinfo=dt.UTC)
+    market.day(112, 16)
+    again.run_once()
+    assert again.guard.current_day == dt.date(2026, 10, 20)
+    assert not again.guard.halted
+    assert [o for o in fake.open("limit") if o.pair == "ETHEUR" and o.side == OrderSide.BUY]
+    assert any("Neuer Tag 2026-10-20" in line for line in logs)
+
+
+def test_daily_loss_does_not_replace_withdrawal_abort(tmp_path):
+    fake, market = FakeKraken(), Market()
+    market.day(110, 14)
+    fake.withdraw = True
+    with pytest.raises(LiveSafetyError, match="Auszahlungsrechte"):
+        runner(tmp_path, fake, market, cfg=_loss_cfg()).run_once()
+
+
+def test_slice_equity_trips_at_five_percent_of_budget_not_of_the_account(tmp_path):
+    """Konto 100 €, Budget 20 €: 5 % sind etwa 1 € der Scheibe, nicht 5 € vom Konto."""
+    logs: list[str] = []
+    clock = {"t": dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)}
+    fake, market = FakeKraken(eur=100.0), Market()
+    market.day(110, 8)
+    run = runner(tmp_path, fake, market, cfg=_loss_cfg(), now=lambda: clock["t"], log=logs.append)
+    run.run_once()
+    assert run.guard is not None
+    assert run.guard.day_start_equity == pytest.approx(20.0, abs=0.05)
+    assert run.state.bot_cash_eur == pytest.approx(20.0)
+    for order in list(fake.open("limit")):
+        if order.pair == "XBTEUR":
+            fake.fill(order.txid)
+    run.run_once()
+    assert run.guard.day_start_equity == pytest.approx(20.0, abs=0.05)
+    assert run.state.bot_cash_eur == pytest.approx(10.0, abs=0.2)
+    units = run.state.symbols["XBTEUR"].units
+    assert units > 0
+    # Kurs so weit runter, dass die Scheibe die 5 % reißt, das 100-€-Konto aber nicht.
+    bot_cash = run.state.bot_cash_eur
+    start = run.guard.day_start_equity
+    target = start * (1 - 0.05) - 0.05  # knapp unter dem Boden von 19 €
+    # Bid = Preis * 0.999, also Preis ≈ (Ziel-Kasse) / Menge / 0.999
+    fake.price["XBTEUR"] = max(1.0, (target - bot_cash) / units / 0.999)
+    run.run_once()
+    equity = run._account_equity()
+    account = fake.bal["ZEUR"] + units * fake.price["XBTEUR"] * 0.999
+    assert equity is not None and equity <= start * (1 - 0.05)
+    assert account > 100 * (1 - 0.05)  # altes Vollkonto wäre noch nicht bei 5 %
+    assert run.guard.halted
+    assert run.guard.day_start_equity == pytest.approx(start)
+
+    cash_before = run.state.bot_cash_eur
+    units_before = run.state.symbols["XBTEUR"].units
+    fake.bal["ZEUR"] += 80  # Einzahlung
+    fake.bal["XXBT"] += 0.02  # manueller Zukauf, nicht die Bot-Menge
+    fake.bal["XETH"] += 0.5
+    fake.bal["ZEUR"] -= 30  # manuell woanders ausgegeben, Scheibe bleibt gedeckt
+    run.run_once()
+    assert run.guard.day_start_equity == pytest.approx(start)
+    assert run.state.bot_cash_eur == pytest.approx(cash_before)
+    assert run.state.symbols["XBTEUR"].units == pytest.approx(units_before)
+    assert run.state.symbols["XBTEUR"].units < fake.bal["XXBT"]
+
+    again = runner(tmp_path, fake, market, cfg=_loss_cfg(), now=lambda: clock["t"], log=logs.append)
+    assert again.state.bot_cash_eur == pytest.approx(cash_before)
+    assert again.guard is not None
+    assert again.guard.day_start_equity == pytest.approx(start)
+    assert again.guard.halted
+
+
+def test_missing_bid_blocks_buys_and_does_not_use_entry_price(tmp_path):
+    logs: list[str] = []
+    clock = {"t": dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)}
+    fake, market = FakeKraken(), Market()
+    market.day(110, 8)
+    run = runner(tmp_path, fake, market, cfg=_loss_cfg(), now=lambda: clock["t"], log=logs.append)
+    run.run_once()
+    for order in list(fake.open("limit")):
+        if order.pair == "XBTEUR":
+            fake.fill(order.txid)
+    run.run_once()
+    assert run.guard is not None and not run.guard.halted
+    start = run.guard.day_start_equity
+    real_book = fake.order_book
+
+    def no_btc_bid(sym, depth=1):
+        book = real_book(sym, depth)
+        if sym == "XBTEUR":
+            return OrderBook(sym, [], book.asks)
+        return book
+
+    fake.order_book = no_btc_bid
+    fake.price["XBTEUR"] = 5.0  # echter Bid würde die Grenze reißen
+    market.day(110, 14)  # ETH will kaufen
+    run.run_once()
+    assert not run.guard.halted  # ohne Bid keine Scheinbewertung zum Einstand oder zu null
+    assert run.guard.day_start_equity == pytest.approx(start)
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR"]
+    assert [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    assert any("kein Bid" in line and "Einstandspreis" in line for line in logs)
+
+    fake.order_book = real_book
+    run.run_once()  # selber Tag, diesmal mit Bid: die Grenze gilt
+    assert run.guard.halted
+    assert run.guard.day_start_equity == pytest.approx(start)
+
+
+def test_balance_fetch_error_still_sells_and_keeps_the_stop_path(tmp_path):
+    logs: list[str] = []
+    clock = {"t": dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)}
+    fake, market = FakeKraken(), Market()
+    market.day(110, 8)
+    run = runner(tmp_path, fake, market, cfg=_loss_cfg(), now=lambda: clock["t"], log=logs.append)
+    run.run_once()
+    for order in list(fake.open("limit")):
+        if order.pair == "XBTEUR":
+            fake.fill(order.txid)
+    run.run_once()
+    assert [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+
+    def boom():
+        raise TimeoutError("Kraken balance")
+
+    fake.balances = boom
+    market.day(80, 14)  # BTC unter SMA → Verkauf, ETH über SMA → wäre ein Kauf
+    run.run_once()  # darf nicht abbrechen
+    assert [o for o in fake.orders.values() if o.pair == "XBTEUR" and o.side == OrderSide.SELL]
+    assert not [o for o in fake.orders.values() if o.pair == "ETHEUR" and o.side == OrderSide.BUY]
+    assert any("Guthaben nicht lesbar" in line for line in logs)
+    assert any("ETHEUR: keine neuen Käufe" in line for line in logs)
 
 
 def test_lost_state_file_never_buys_twice_while_bot_orders_are_open(tmp_path):
