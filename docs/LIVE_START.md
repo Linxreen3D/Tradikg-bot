@@ -113,7 +113,7 @@ Maker 0,40 %) – nur wenn die Regel ohnehin kaufen würde. Direkt danach setzt 
 Kraken. Das Skript stoppt den Bot, kauft, startet ihn wieder (jetzt mit 5-Minuten-Takt):
 
 ```bash
-scripts/live_buy_now.sh 19 1.0
+scripts/live_buy_now.sh 20 1.0
 ```
 
 Der Bot schreibt alle 5 Minuten seinen echten Kontostand nach `~/.tradikg/live/snapshot.json`;

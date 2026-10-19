@@ -1374,3 +1374,98 @@ def test_drawdown_does_not_replace_withdrawal_abort(tmp_path):
     with pytest.raises(LiveSafetyError, match="Auszahlungsrechte"):
         runner(tmp_path, fake, market, cfg=_dd_cfg()).run_once()
     assert not (tmp_path / "DRAWDOWN_HALT").exists()
+
+
+def test_dust_remainder_stays_tracked_and_bot_stop_below_minimum_is_cancelled(tmp_path):
+    """Unter 0,50 € und unter dem Börsenminimum: Menge bleibt, Bot-Stop wird gelöst, keiner neu."""
+    fake, m = _bought(tmp_path)
+    r = runner(tmp_path, fake, m)
+    st = r.state.symbols["XBTEUR"]
+    bot_stop = next(o for o in fake.open("stop-loss") if o.pair == "XBTEUR")
+    dust = 0.00001  # unter Mindestmenge 0,00005 und unter 0,50 €
+    st.units, st.entry_price, st.peak = dust, 100.0, 100.0
+    fake.bal["XXBT"] = bot_stop.volume + 0.01  # Platz für den fremden Stop, Menge bleibt Staub
+    manual = fake.add_order(
+        {
+            "pair": "XBTEUR",
+            "userref": 1,
+            "type": "sell",
+            "ordertype": "stop-loss",
+            "price": "50.0",
+            "volume": "0.01",
+        }
+    )
+    r.run_once()  # selber Tag: keine neue Tagesentscheidung
+    assert st.units == pytest.approx(dust)
+    assert st.entry_price == pytest.approx(100.0)
+    assert st.peak == pytest.approx(100.0)
+    assert fake.orders[bot_stop.txid].status == OrderStatus.CANCELED
+    assert st.stop_txid is None
+    assert fake.orders[manual].status == OrderStatus.OPEN  # ohne Bot-userref
+    assert not [
+        o
+        for o in fake.open("stop-loss")
+        if o.pair == "XBTEUR" and o.client_ref and o.client_ref % 10 == 3
+    ]
+
+
+def test_forgotten_bot_stop_on_empty_state_is_cancelled(tmp_path):
+    """Alter Zustand hat die Menge gelöscht, der Bot-Stop liegt noch bei Kraken."""
+    fake, m = _bought(tmp_path)
+    r = runner(tmp_path, fake, m)
+    st = r.state.symbols["XBTEUR"]
+    orphan = next(o for o in fake.open("stop-loss") if o.pair == "XBTEUR")
+    st.units, st.entry_price, st.peak = 0.0, 0.0, 0.0
+    st.stop_txid, st.stop_price, st.stop_units = None, 0.0, 0.0
+    r.run_once()
+    assert fake.orders[orphan.txid].status == OrderStatus.CANCELED
+    assert not [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+
+
+def test_remainder_under_dust_but_above_exchange_minimum_keeps_a_stop(tmp_path):
+    fake, m = _bought(tmp_path)
+    r = runner(tmp_path, fake, m)
+    cheap = PairRules("XXBTZEUR", "XBTEUR", "XXBT", "ZEUR", 8, 1, 0.1, 1e-8, 0.01)
+    fake.pair_rules = lambda sym: cheap if sym == "XBTEUR" else RULES[sym]
+    st = r.state.symbols["XBTEUR"]
+    st.units, st.entry_price, st.peak = 0.004, 100.0, 100.0  # 0,40 € < 0,50 € Staubgrenze
+    fake.bal["XXBT"] = 0.004
+    r.run_once()
+    assert st.units == pytest.approx(0.004)
+    assert st.entry_price == pytest.approx(100.0)
+    (stop,) = [o for o in fake.open("stop-loss") if o.pair == "XBTEUR"]
+    assert stop.volume == pytest.approx(0.004)
+    assert st.stop_txid == stop.txid
+
+
+def test_buy_now_userref_does_not_collide_with_daily_fallback(tmp_path):
+    fake, m = FakeKraken(), Market()
+    m.day(110)
+    r = runner(tmp_path, fake, m)
+    day = str(m("XBTEUR").index[-1].date())
+    assert r._ref(day, "XBTEUR", "buy_now") != r._ref(day, "XBTEUR", "buy_fallback")
+    order = {"type": "buy", "ordertype": "limit", "price": "100.0", "volume": "0.05"}
+    first = r._submit("XBTEUR", "buy_fallback", day, dict(order))
+    again = r._submit("XBTEUR", "buy_fallback", day, dict(order))
+    assert again == first  # echter Doppelgänger wird übernommen
+    assert len(fake.orders) == 1
+    now = r._submit("XBTEUR", "buy_now", day, dict(order))
+    assert now != first
+    assert fake.refs[first] == r._ref(day, "XBTEUR", "buy_fallback")
+    assert fake.refs[now] == r._ref(day, "XBTEUR", "buy_now")
+
+    live, market = FakeKraken(), Market()
+    market.day(110)
+    bot = runner(tmp_path / "live2", live, market)
+    (tmp_path / "live2").mkdir()
+    bot.run_once()
+    bot.buy_now()
+    today = bot._now().date().isoformat()
+    placed = [o for o in live.orders.values() if "XBT" in o.pair and live.refs[o.txid] % 10 == 6]
+    assert placed
+    assert all(o.client_ref == bot._ref(today, "XBTEUR", "buy_now") for o in placed)
+    before = len(live.orders)
+    fallback = bot._submit("XBTEUR", "buy_fallback", today, dict(order))
+    assert len(live.orders) == before + 1
+    assert live.refs[fallback] == bot._ref(today, "XBTEUR", "buy_fallback")
+    assert bot._submit("XBTEUR", "buy_now", today, dict(order)) == placed[0].txid

@@ -70,7 +70,17 @@ from tradikg_bot.risk.limits import (
 )
 
 MAX_BUDGET_EUR = 20.0  # nicht anheben – das Konto kann mehr halten, die Scheibe bleibt 20 €
-KIND = {"buy": 1, "buy_fallback": 2, "stop": 3, "sell": 4, "sell_fallback": 5}
+# buy_now ist eine eigene Art, damit der Sofortkauf nicht dieselbe userref wie der
+# tägliche IOC-Fallback am selben Tag bekommt. Echte Doppelgänger derselben Art
+# werden in ``_submit`` weiter übernommen.
+KIND = {
+    "buy": 1,
+    "buy_fallback": 2,
+    "stop": 3,
+    "sell": 4,
+    "sell_fallback": 5,
+    "buy_now": 6,
+}
 
 
 def _balance_map(balances) -> dict[str, dict[str, float]]:
@@ -94,7 +104,7 @@ class LiveTrendConfig:
     symbols: tuple[str, ...] = ("XBTEUR", "ETHEUR")
     sma: int = 200
     stop_frac: float = 0.20
-    dust_eur: float = 0.50  # Restmengen darunter gelten als „keine Position“
+    dust_eur: float = 0.50  # kleinere Nachkäufe entfallen; die Position selbst bleibt
     # Tagesverlustgrenze. Im Echtbetrieb aus, bis sie bewusst eingeschaltet wird.
     # 5 % von ~20 € begrenzen einen schlechten Tag auf etwa 1 €; höchstens 10 %.
     daily_loss_enabled: bool = False
@@ -691,7 +701,7 @@ class LiveTrendRunner:
             st.buy_eur = eur
             st.buy_txid = self._submit(
                 sym,
-                "buy_fallback",
+                "buy_now",
                 today,
                 {
                     "type": "buy",
@@ -735,8 +745,8 @@ class LiveTrendRunner:
         if st.units > held + 1e-12:  # z. B. von Hand verkauft – nie mehr verkaufen als da ist
             self.log(f"[ABGLEICH] {sym}: Bot-Menge {st.units} > Bestand {held} – angepasst")
             st.units = held
-        if st.units * max(st.entry_price, 1e-9) < self.cfg.dust_eur and not st.buy_txid:
-            st.units, st.entry_price, st.peak = 0.0, 0.0, 0.0
+        # Rest unter dust_eur bleibt stehen. Ein Stop unter dem Börsenminimum
+        # wird in ``_ensure_stop`` gelöst und nicht neu gelegt.
 
     def _apply_buy(self, sym: str, st: SymbolState, o) -> None:
         if o.filled > 0:
@@ -1029,6 +1039,47 @@ class LiveTrendRunner:
         )
         st.buy_day = day
 
+    def _is_our_stop(self, ref: int | None, sym: str) -> bool:
+        if ref is None or ref < 10**7 or ref % 10 != KIND["stop"]:
+            return False
+        slot = (ref // 10) % 10
+        return slot == self.cfg.symbols.index(sym) + 1
+
+    def _stop_size_ok(self, sym: str, price: float, volume: float) -> bool:
+        """False, wenn Kraken die Order ablehnen würde (Mindestmenge oder Mindestwert)."""
+        rules = self.gw.pair_rules(sym)
+        if volume <= 0 or volume < rules.ordermin - 1e-12:
+            return False
+        return volume * max(price, 0.0) + 1e-12 >= rules.costmin
+
+    def _cancel_bot_stops(self, sym: str, st: SymbolState, why: str) -> None:
+        """Bot-Stops dieser Position lösen. Fremde Orders (ohne Bot-userref) bleiben."""
+        rules = self.gw.pair_rules(sym)
+        names = {sym, rules.altname, rules.pair}
+        ids: list[str] = []
+        if st.stop_txid:
+            ids.append(st.stop_txid)
+        for order in self.gw.open_orders():
+            if order.status.is_final or order.ordertype != "stop-loss" or order.pair not in names:
+                continue
+            if order.txid in ids or not self._is_our_stop(order.client_ref, sym):
+                continue
+            ids.append(order.txid)
+        stuck: str | None = None
+        for txid in ids:
+            self._cancel(txid, why)
+            if self.dry_run:
+                continue
+            order = self.gw.query_orders([txid]).get(txid)
+            if order is not None and not order.status.is_final:
+                stuck = txid
+        if self.dry_run:
+            return
+        if stuck is None:
+            st.stop_txid, st.stop_price, st.stop_units = None, 0.0, 0.0
+        else:
+            st.stop_txid = stuck
+
     def _ensure_stop(self, sym: str, st: SymbolState) -> None:
         """Notfall-Stop bei Kraken setzen bzw. nachziehen (nur für eigene Menge).
 
@@ -1039,13 +1090,19 @@ class LiveTrendRunner:
 
         Ein offener Verkauf (Market-Ausstieg) bindet die Menge selbst. Der Stop wird dann
         nicht angefasst. Fehlt der Verkauf, legt dieser Durchgang den Stop wieder.
+        Unter dem Börsenminimum wird kein neuer Stop gelegt; ein verwaister Bot-Stop wird gelöst.
+        Die Restmenge bleibt in der Zustandsdatei.
         """
-        if st.units <= 0 or st.sell_txid:
+        if st.sell_txid:
+            return
+        if st.units <= 0:
+            self._cancel_bot_stops(sym, st, "Position leer, verwaister Bot-Stop")
             return
         rules = self.gw.pair_rules(sym)
         target = rules.round_price_down(max(st.peak, st.entry_price) * (1 - self.cfg.stop_frac))
         volume = rules.round_volume_down(st.units)
-        if volume <= 0:
+        if not self._stop_size_ok(sym, target, volume):
+            self._cancel_bot_stops(sym, st, "Rest unter dem Börsenminimum, kein neuer Stop")
             return
         if st.stop_txid and target <= st.stop_price * 1.001 and volume == st.stop_units:
             if self.dry_run or self._stop_is_open(st.stop_txid):
