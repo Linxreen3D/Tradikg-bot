@@ -392,10 +392,12 @@ def test_reconstruct_refuses_a_position_bigger_than_the_slice():
 
 def test_unit_file_enables_daily_loss_and_drawdown():
     text = (ROOT / "deploy" / "linux" / "tradikg-live.service").read_text()
-    loop = (ROOT / "scripts" / "tradikg_run_live_loop.sh").read_text()
+    loop = (ROOT / "deploy" / "linux" / "run_live_loop.sh").read_text()
+    wrapper = (ROOT / "scripts" / "tradikg_run_live_loop.sh").read_text()
     assert "Restart=on-failure" in text
     assert "RestartPreventExitStatus=2" in text
-    assert "tradikg_run_live_loop.sh" in text
+    assert "deploy/linux/run_live_loop.sh" in text
+    assert "deploy/linux/run_live_loop.sh" in wrapper
     assert "Environment=TRADIKG_HOME=%h/.tradikg" in text
     assert "Environment=TRADIKG_REPO=@REPO@" in text
     assert "EnvironmentFile=%h/.config/tradikg/live.env" in text
@@ -439,15 +441,17 @@ def test_install_script_sets_mode_600_and_does_not_print_or_start(tmp_path):
     unit = (tmp_path / "config" / "systemd" / "user" / "tradikg-live.service").read_text()
     assert "@REPO@" not in unit
     assert "Restart=on-failure" in unit and "RestartPreventExitStatus=2" in unit
-    assert "tradikg_run_live_loop.sh" in unit
+    assert "deploy/linux/run_live_loop.sh" in unit
     assert "TRADIKG_DRAWDOWN_KILL_FRACTION" not in unit
     loop = tmp_path / ".local" / "bin" / "tradikg_run_live_loop.sh"
     assert loop.is_file()
     assert stat.S_IMODE(loop.stat().st_mode) & 0o111
     loop_text = loop.read_text()
-    assert "--daily-loss" in loop_text and "--daily-loss-fraction 0.05" in loop_text
-    assert "--drawdown-kill-fraction 0.45" in loop_text and "--require-dry-run" in loop_text
+    assert "run_live_loop.sh" in loop_text
     assert "dummy-not-a-secret" not in loop_text
+    versioned = (ROOT / "deploy" / "linux" / "run_live_loop.sh").read_text()
+    assert "--daily-loss" in versioned and "--daily-loss-fraction 0.05" in versioned
+    assert "--drawdown-kill-fraction 0.45" in versioned and "--require-dry-run" in versioned
 
 
 def test_parser_exposes_the_linux_run_flags():

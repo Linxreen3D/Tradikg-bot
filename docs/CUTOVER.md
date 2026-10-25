@@ -12,13 +12,19 @@ Der Linux-Lauf ist fest verdrahtet:
 - Drawdown-Sperre **an, 45 %** unter dem Höchststand der Scheibe
   (`--drawdown-kill-fraction 0.45`). Enger ist erlaubt, weiter nicht.
   Der Schalter ist dieses CLI-Flag. Eine Umgebungsvariable liest der Bot dafür nicht.
-- Neustart nur bei Fehler: `Restart=on-failure`, aber nicht bei Exit 2
-  (`RestartPreventExitStatus=2`). Die Schleife
-  `~/.local/bin/tradikg_run_live_loop.sh` startet den Bot. Nach einem Absturz
-  und vor jedem Start prüft sie validate-only. Scheitert der Abgleich, endet
-  sie mit Exit 2 und systemd hebt sie nicht wieder an.
+- Neustart nur bei Fehler. Die versionierte Schleife
+  `deploy/linux/run_live_loop.sh` startet den Bot. Nach einem Absturz und vor
+  jedem Start prüft sie validate-only. Scheitert der Abgleich, schreibt sie
+  `[ALARM] Neustart verweigert: … Kein Neustart.` und endet mit Exit 2, ohne
+  den Bot zu starten und ohne es in derselben Schleife noch einmal zu versuchen.
+- Wo `systemd --user` läuft, bleibt die Unit die Option (`Restart=on-failure`,
+  nicht bei Exit 2, `RestartPreventExitStatus=2`). Auf einem Container ohne
+  cron und ohne `systemd --user` (PID 1 ist tini) holt ein stiller Hook in
+  `~/.bashrc` und `~/.profile` die Schleife nach dem nächsten Login wieder
+  hoch, siehe Abschnitt 8. `loop.pid` lässt keine zweite Schleife zu.
 - Zugangsdaten aus `~/.config/tradikg/live.env` (`chmod 600`), Fallback nach dem
-  macOS-Schlüsselbund. Auszahlungsrecht bricht weiter ab.
+  macOS-Schlüsselbund. Die Schleife lädt diese Datei in die Umgebung und
+  schreibt die Werte nicht ins Log. Auszahlungsrecht bricht weiter ab.
 
 Layout wie auf dem Mac, unter `TRADIKG_HOME` (Standard `~/.tradikg`):
 
@@ -29,6 +35,9 @@ Layout wie auf dem Mac, unter `TRADIKG_HOME` (Standard `~/.tradikg`):
 | `live/live.pid` | PID von `start_live.sh` / dem Linux-Prozess |
 | `live/live.lock` | lokale Sperre (`flock`) |
 | `live/dry_run_ok.json` | Stempel des Probelaufs (Konfiguration und Commit, ohne Geheimnisse, ohne Zustandshash) |
+| `live/loop.pid` | PID der Linux-Schleife (nicht die Bot-PID) |
+| `live/loop.lock` | Sperre der Schleife (`flock`), nicht `live.lock` |
+| `live/loop.log` | Log der Schleife. `[ALARM]` steht am Zeilenanfang |
 
 ## 1. Mac-Bot stoppen
 
@@ -83,10 +92,12 @@ scripts/install_linux_unit.sh
 sudo loginctl enable-linger "$USER"
 ```
 
-`install_linux_unit.sh` legt `~/.config/systemd/user/tradikg-live.service` an,
-kopiert die Neustart-Schleife nach `~/.local/bin/tradikg_run_live_loop.sh` und,
-falls noch keine Datei existiert, eine leere `~/.config/tradikg/live.env` mit
-`chmod 600`. Key und Secret **in dieser Datei auf der Box** eintragen
+`install_linux_unit.sh` legt `~/.config/systemd/user/tradikg-live.service` an.
+`ExecStart` zeigt auf die versionierte Schleife `deploy/linux/run_live_loop.sh`.
+`~/.local/bin/tradikg_run_live_loop.sh` bleibt als dünner Aufruf derselben Datei,
+falls ein älterer Pfad noch benutzt wird. Falls noch keine Datei existiert, legt
+das Skript eine leere `~/.config/tradikg/live.env` mit `chmod 600` an. Key und
+Secret **in dieser Datei auf der Box** eintragen
 (`KRAKEN_API_KEY`, `KRAKEN_API_SECRET`), Datei nicht cat-en und nicht committen.
 Danach noch einmal `chmod 600 ~/.config/tradikg/live.env`. Die Datei liegt
 außerhalb des Repos. Der Key braucht dieselben Rechte wie auf dem Mac und
@@ -158,13 +169,18 @@ müssen dieselben Flags tragen.
 
 ## 7. Erst jetzt live
 
+Wo `systemctl --user` läuft:
+
 ```bash
 systemctl --user enable --now tradikg-live.service
 systemctl --user status tradikg-live.service
 .venv/bin/tradikg live status
 ```
 
-Die Unit startet `~/.local/bin/tradikg_run_live_loop.sh`. Die Schleife setzt
+Auf dem Container (PID 1 ist tini, kein cron, `systemd --user` offline) nicht
+`systemctl` benutzen. Stattdessen Abschnitt 8: `deploy/linux/ensure_running.sh`.
+
+Die Unit startet `deploy/linux/run_live_loop.sh`. Die Schleife setzt
 Budget 20, Tagesverlustgrenze 5 %, Drawdown-Sperre 45 %
 (`--drawdown-kill-fraction 0.45`) und `--require-dry-run`.
 `Restart=on-failure` gilt für die Schleife selbst. Exit 2
@@ -188,11 +204,12 @@ Vor jedem Start der Schleife, und damit auch nach einem Absturz, läuft
 - Zweite Instanz: lebende PID, gehaltene Sperrdatei, Bot-Order mit `opentm` in
   den letzten 15 Minuten.
 
-Nur wenn das passt, startet `tradikg live run`. Sonst eine Zeile
-`Neustart verweigert: … Kein Neustart.` und Exit 2. Die Schleife startet den Bot
-dann nicht erneut, und systemd auch nicht. Ein Konfigurationswechsel (Budget,
-Tagesgrenze, Drawdown, Commit) ist so ein Abbruch: zuerst einen neuen
-manuellen `tradikg live dry-run`, danach `systemctl --user start`.
+Nur wenn das passt, startet `tradikg live run`. Sonst eine Zeile, die mit
+`[ALARM]` beginnt: `[ALARM] Neustart verweigert: … Kein Neustart.` und Exit 2.
+Die Schleife startet den Bot dann nicht erneut, und systemd auch nicht.
+Ein Konfigurationswechsel (Budget, Tagesgrenze, Drawdown, Commit) ist so ein
+Abbruch: zuerst einen neuen manuellen `tradikg live dry-run`, danach
+`systemctl --user start` oder, ohne systemd, `deploy/linux/ensure_running.sh`.
 
 Kill-Switch, Auszahlungsabbruch, börsenseitiger Stop, 5-%-Tagesgrenze,
 Drawdown −45 % (nur manuell lösbar), `MAX_BUDGET_EUR=20` und die Verweigerung
@@ -203,9 +220,63 @@ noch einmal; nach dem Fenster `systemctl --user start` erneut, wenn keine
 andere Instanz läuft.
 
 Läuft die Unit schon, nach diesem Stand `scripts/install_linux_unit.sh` noch
-einmal ausführen (neue Schleife nach `~/.local/bin`, neue `ExecStart`-Zeile)
+einmal ausführen (neue `ExecStart`-Zeile auf `deploy/linux/run_live_loop.sh`)
 und `systemctl --user daemon-reload`. Nicht `enable --now`, solange der
-Probelauf nicht `OK` ist.
+Probelauf nicht `OK` ist. Ohne systemd stattdessen Abschnitt 8.
+
+Fehlt `.venv`, startet Python darin nicht, oder `import tradikg_bot` scheitert,
+baut die Schleife die Umgebung neu und schreibt vorher eine Zeile, die mit
+`[ALARM]` beginnt:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e .
+```
+
+Scheitert die Installation, wieder `[ALARM]`, Exit 2, der Bot startet nicht.
+Dieselben drei Fälle landen in `~/.tradikg/live/loop.log`: Neuaufbau der
+Umgebung, verweigerter Start, fehlgeschlagene Installation. Key und Secret
+stehen dort nicht.
+
+## 8. Neustart ohne systemd und ohne cron
+
+Die Box ist ein Container. PID 1 ist tini, es gibt kein cron und
+`systemd --user` ist offline. Eine Unit und ein `@reboot`-Cron starten den Bot
+dort nach einem Reboot nicht. Die Unit oben bleibt die Option auf einem
+Rechner, auf dem `systemctl --user` wirklich läuft.
+
+`deploy/linux/ensure_running.sh` liest `~/.tradikg/live/loop.pid`. Läuft die
+Schleife, tut das Skript nichts und gibt nichts aus. Sonst startet es
+`deploy/linux/run_live_loop.sh` einmal mit `nohup` und `setsid`.
+
+Einmalig den Hook legen (still, keine zweite Zeile, kein zweiter Start, wenn
+`~/.bashrc` und `~/.profile` in derselben Shell gelesen werden):
+
+```bash
+deploy/linux/install_login_hook.sh
+```
+
+Dieselbe Zeile von Hand, Pfad anpassen. Für `~/.profile` die Datei tauschen:
+
+```bash
+grep -q tradikg-live-ensure ~/.bashrc || printf '\n%s\n' \
+  '[ -n "${TRADIKG_ENSURE_DONE:-}" ] || { TRADIKG_ENSURE_DONE=1; [ -x /pfad/zum/Tradikg-bot/deploy/linux/ensure_running.sh ] && /pfad/zum/Tradikg-bot/deploy/linux/ensure_running.sh >/dev/null 2>&1 || true; } # tradikg-live-ensure' \
+  >> ~/.bashrc
+```
+
+Sofort starten, ohne auf eine neue Shell zu warten:
+
+```bash
+deploy/linux/ensure_running.sh
+```
+
+Nach einem Umzug des Repos `install_login_hook.sh` noch einmal ausführen: es
+ersetzt die alte Zeile, legt sie aber nicht doppelt an. Exit 2 beendet diese
+Schleife und startet sie nicht von selbst neu. Die nächste Login-Shell ruft
+`ensure_running.sh` einmal auf. Liegt der Grund der Verweigerung noch vor,
+wieder `[ALARM]` und Exit 2, kein Dauerlauf. Wer die Schleife aus lassen will,
+entfernt die Hook-Zeile, sonst holt die nächste Shell sie wieder hoch.
+`loop.pid` und `loop.lock` sind nur die Schleife. `live.pid` und `live.lock`
+bleiben die Prüfung der Bot-Instanz.
 
 ## Nicht gleichzeitig mit dem Mac
 
@@ -232,6 +303,10 @@ Grenzen, die der Check nicht schließt:
 systemctl --user stop tradikg-live.service
 systemctl --user disable tradikg-live.service
 ```
+
+Ohne systemd die Schleife beenden: SIGTERM an die PID in
+`~/.tradikg/live/loop.pid`. Solange der Hook in `~/.bashrc` oder `~/.profile`
+steht, startet die nächste Login-Shell sie wieder.
 
 Erst wenn auf der Box kein Prozess mehr läuft, auf dem Mac die Kill-Datei lösen
 (`tradikg live kill --release`) und dort bei Bedarf `scripts/start_live.sh` wieder
