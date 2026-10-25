@@ -62,3 +62,17 @@ def test_negative_parameters_rejected():
 def test_default_fee_model_per_asset_class():
     assert default_fee_model(AssetClass.CRYPTO) is CRYPTO_SPOT_DEFAULT
     assert default_fee_model("stock") is STOCK_NEOBROKER_DEFAULT
+
+
+def test_all_kraken_fee_defaults_use_public_tier_1():
+    """Kraken Pro Spot-Krypto Stufe 1 (abgerufen 17.10.2026): 0,80 % Taker / 0,40 % Maker."""
+    from tradikg_bot.costs import KRAKEN_SPOT_ASSUMED, KRAKEN_SPOT_MAKER, KRAKEN_SPOT_TAKER
+    from tradikg_bot.live.paper import PaperExchange
+    from tradikg_bot.market.scanner import ScanConfig
+    from tradikg_bot.trading.runner import DEFAULT_PAPER_FEES
+
+    assert (KRAKEN_SPOT_TAKER, KRAKEN_SPOT_MAKER) == (0.008, 0.004)
+    assert KRAKEN_SPOT_ASSUMED.commission_rate == KRAKEN_SPOT_TAKER
+    assert (DEFAULT_PAPER_FEES.taker, DEFAULT_PAPER_FEES.maker) == (0.008, 0.004)
+    assert (PaperExchange().fees.taker, PaperExchange().fees.maker) == (0.008, 0.004)
+    assert ScanConfig().assumed_taker_fee == 0.008

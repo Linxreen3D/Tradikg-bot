@@ -11,10 +11,12 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from tradikg_bot.costs import KRAKEN_SPOT_MAKER, KRAKEN_SPOT_TAKER
 from tradikg_bot.replay.walkforward import (
     ReplayResult,
     ScenarioResult,
     distribution,
+    weekly_stats,
 )
 
 PERIOD_LABEL = {
@@ -35,6 +37,14 @@ def pct(x: float | None, digits: int = 1) -> str:
     if x is None:
         return "–"
     return f"{x * 100:+.{digits}f} %".replace(".", ",")
+
+
+def _weeks(s: ScenarioResult | None) -> dict | None:
+    return weekly_stats(s.equity["equity"], s.capital) if s and not s.equity.empty else None
+
+
+def _share(w: dict | None) -> str:
+    return f"{w['positive_share']:.0%}" if w and w["weeks"] else "–"
 
 
 def _one(result: ReplayResult, **kw: Any) -> ScenarioResult | None:
@@ -150,7 +160,8 @@ def render_replay_report(result: ReplayResult, holdout_count: int = 0) -> str:
         f"Assets: {', '.join(result.symbols)}",
         f"- Zeitraum: {idx[0].date()} – {idx[-1].date()} ({len(idx)} Kerzen)",
         "- Ausführung: dieselbe Paper-Engine wie im Dauerbetrieb (Signale, Netto-EV-Filter, "
-        "Risiko 1 % je Trade, Mindestordergrößen, Gebühren 0,40 %/0,25 %, Spread 10 bps, "
+        f"Risiko 1 % je Trade, Mindestordergrößen, Gebühren {KRAKEN_SPOT_TAKER:.2%} Taker/"
+        f"{KRAKEN_SPOT_MAKER:.2%} Maker (Kraken-Stufe 1), Spread 10 bps, "
         "Slippage, SL/TP je Kerze, Ledger 33/33/34 nach Verlustaufholung). **Keine echten "
         "Orders.**",
         f"- Handelsregeln (Mindestordergrößen, Tick, Dezimalen): {result.rules_note or '–'}. "
@@ -183,8 +194,9 @@ def render_replay_report(result: ReplayResult, holdout_count: int = 0) -> str:
     # -- Was wäre aus 100 € geworden? ---------------------------------------------------------
     lines += ["", "## Was wäre aus 100 € geworden?", ""]
     lines += [
-        "| Zeitraum | Von – bis | Bot | Buy & Hold | Cash | Trades | Max. Drawdown Bot |",
-        "|---|---|---|---|---|---|---|",
+        "| Zeitraum | Von – bis | Bot | Buy & Hold | Cash | Trades | Max. Drawdown Bot | "
+        "Wochen im Plus (Bot / B&H) | Schlechteste Woche (Bot / B&H) |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for s in [
         *result.select(period="walk_forward", variant="bot", profile="eur100"),
@@ -199,11 +211,15 @@ def render_replay_report(result: ReplayResult, holdout_count: int = 0) -> str:
             ),
             None,
         )
+        w = _weeks(s)
+        wb = _weeks(bh)
         lines.append(
             f"| {PERIOD_LABEL[s.period]} | {s.start.date()} – {s.end.date()} | "
             f"**{eur(s.final_equity)}** ({pct(s.return_pct)}) | "
             f"{eur(bh.final_equity) if bh else '–'} | {eur(s.capital)} | {s.n_trades} | "
-            f"{pct(s.max_drawdown)} |"
+            f"{pct(s.max_drawdown)} | "
+            f"{_share(w)} von {w['weeks'] if w else 0} / {_share(wb)} | "
+            f"{pct(w['worst_week']) if w else '–'} / {pct(wb['worst_week']) if wb else '–'} |"
         )
 
     # -- Verteilung -----------------------------------------------------------------------------

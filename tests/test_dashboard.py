@@ -11,6 +11,7 @@ from tradikg_bot.dashboard import queries as q
 from tradikg_bot.platform_config import PlatformConfig
 from tradikg_bot.trading.runner import PaperPaths, open_engine, replay
 
+from helpers import MECHANICS_FEES
 from test_paper_engine import FixedProbability, ScriptedSource, bars_frame
 
 APP = Path(__file__).resolve().parents[1] / "src" / "tradikg_bot" / "dashboard" / "app.py"
@@ -31,6 +32,7 @@ def populated(tmp_path):
         FixedProbability(),
         ScriptedSource({data.index[15]}),
         PaperEngineConfig(capital_eur=cfg.capital_eur, min_history_bars=10),
+        fees=MECHANICS_FEES,
     )
     replay(engine, {"AAAEUR": data})
     return cfg, engine
@@ -68,7 +70,8 @@ def test_settings_contain_no_secrets(populated, monkeypatch):
     monkeypatch.setenv("KRAKEN_API_SECRET", "TOPSECRET")
     cfg, _ = populated
     text = str(q.settings(cfg)) + str(q.health(cfg)["status"])
-    assert "TOPSECRET" not in text and "deaktiviert" in q.settings(cfg)["live_mode"]
+    assert "TOPSECRET" not in text
+    assert q.settings(cfg)["echtgeld_bot (tradikg live)"] == "aus"  # ohne laufenden Prozess
 
 
 def test_queries_are_read_only(populated):
@@ -131,3 +134,217 @@ def test_replay_queries_on_fresh_install_are_empty(tmp_path):
     cfg = PlatformConfig(home=tmp_path / "fresh")
     assert q.replay_runs(cfg).empty and q.replay_run(cfg, 1) is None
     assert q.replay_scenarios(cfg, 1).empty and q.replay_strategy_stats(pd.DataFrame()).empty
+
+
+def test_cockpit_reads_live_state_and_order_limits(tmp_path):
+    import json
+
+    from tradikg_bot.dashboard import cockpit
+    from tradikg_bot.platform_config import PlatformConfig
+
+    cfg = PlatformConfig(home=tmp_path)
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "trend_state.json").write_text(json.dumps({"symbols": {"XBTEUR": {"buy_txid": "T1"}}}))
+    (live / "live.log").write_text(
+        "2026-10-18 01:52:12 UTC  [ORDER] buy XBTEUR 0.00013006 @ 72460.7 → T1\n"
+    )
+    state, limits, log = cockpit._live(cfg)
+    assert state["XBTEUR"]["buy_txid"] == "T1" and limits == {"T1": 72460.7} and len(log) == 1
+    assert cockpit._alive(tmp_path / "fehlt.pid") is None
+
+
+def test_cockpit_renders_without_errors(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    app = AppTest.from_file(
+        str(Path(__file__).resolve().parents[1] / "src/tradikg_bot/dashboard/app.py")
+    )
+    app.run(timeout=60)
+    assert not app.exception
+
+
+def test_live_tab_renders_real_snapshot(tmp_path, monkeypatch):
+    import json
+
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    (tmp_path / "live").mkdir()
+    (tmp_path / "live" / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "updated": "2026-10-18T10:00:00+00:00",
+                "budget_eur": 19.0,
+                "balances": {
+                    "ZEUR": {"total": 9.5, "held": 0.0},
+                    "XXBT": {"total": 0.00013, "held": 0},
+                },
+                "prices": {"XBTEUR": 72500.0, "ETHEUR": 2140.0},
+                "symbols": {
+                    "XBTEUR": {"units": 0.00013, "entry_price": 72460.7, "stop_price": 57968.0},
+                    "ETHEUR": {"buy_txid": "T2", "buy_eur": 9.5},
+                },
+            }
+        )
+    )
+    app = AppTest.from_file(
+        str(Path(__file__).resolve().parents[1] / "src/tradikg_bot/dashboard/app.py")
+    )
+    app.run(timeout=60)
+    assert not app.exception
+    html = " ".join(m.value for m in app.markdown)
+    assert "GESAMTWERT" in html and "Kauf-Order offen" in html and "0.000130" in html
+
+
+def test_real_money_charts_render_with_purchase_log(tmp_path, monkeypatch):
+    import json
+
+    from streamlit.testing.v1 import AppTest
+
+    from tradikg_bot.dashboard import live_view
+    from tradikg_bot.platform_config import PlatformConfig
+    from tradikg_bot.storage import SQLiteStore
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "live.log").write_text(
+        "2026-10-18 09:58:17 UTC  [KAUF] XBTEUR 0.00012834 zu 73064.50 (Gebühr 0.0750 €)\n"
+    )
+    assert live_view._buy_times(PlatformConfig(home=tmp_path))["XBTEUR"] == pd.Timestamp(
+        "2026-10-18 09:58:17", tz="UTC"
+    )
+    idx = pd.date_range("2026-10-18 08:00", periods=4, freq="h", tz="UTC")
+    bars = pd.DataFrame(
+        {"open": 73000.0, "high": 73500.0, "low": 72900.0, "close": 73100.0, "volume": 1.0},
+        index=idx,
+    )
+    (tmp_path / "data").mkdir()
+    SQLiteStore(tmp_path / "data" / "market.sqlite").save_bars("XBTEUR", "1h", bars)
+    (live / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "updated": "2026-10-18T11:30:00+00:00",
+                "budget_eur": 19.0,
+                "balances": {"ZEUR": {"total": 9.5, "held": 0.0}},
+                "prices": {"XBTEUR": 73200.0, "ETHEUR": 2150.0},
+                "symbols": {
+                    "XBTEUR": {"units": 0.00012834, "entry_price": 73064.5, "stop_price": 58451.6}
+                },
+            }
+        )
+    )
+    app = AppTest.from_file(
+        str(Path(__file__).resolve().parents[1] / "src/tradikg_bot/dashboard/app.py")
+    )
+    app.run(timeout=60)
+    assert not app.exception
+    assert any("Wert deines Echtgelds" in m.value for m in app.markdown)
+
+
+LIVE_LOG = """\
+2026-10-18 01:52:12 UTC  [TAG 2026-10-17] XBTEUR: Schluss 72460.70, SMA 200 62799.20 → über
+2026-10-18 01:52:12 UTC  [ORDER] buy XBTEUR 0.00013006 @ 72460.7 → OHA4XL
+2026-10-18 01:52:13 UTC  [SKIP] ETHEUR: 3.00 € frei reicht nicht für die Mindestorder 4.40 €
+2026-10-18 09:58:17 UTC  [KAUF] XBTEUR 0.00012834 zu 73064.50 (Gebühr 0.0750 €)
+2026-11-02 01:00:00 UTC  [TAG 2026-11-01] XBTEUR: Schluss 60000.00, SMA 200 61000.00 → unter
+2026-11-02 08:00:00 UTC  [VERKAUF] XBTEUR 0.00012834 zu 59000.00 (Signal), Ergebnis ≈ -1.90 €
+"""
+
+
+def test_strategy_health_parses_fills_deviation_and_rejections(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    from tradikg_bot.dashboard import health
+
+    ev = health.parse_log(LIVE_LOG.splitlines())
+    f = health.fills(ev)
+    buy, sell = f.iloc[0], f.iloc[1]
+    assert buy["Gebühr %"] == pytest.approx(0.0750 / (0.00012834 * 73064.5))  # ≈ 0,80 % Taker
+    assert buy["Abweichung"] == pytest.approx(72460.7 / 73064.5 - 1)  # teurer als der Schluss
+    assert sell["Abweichung"] == pytest.approx(59000 / 60000 - 1) and sell["Ergebnis €"] == -1.9
+    assert list(ev[ev["tag"] == "SKIP"]["text"])[0].startswith("ETHEUR: 3.00 €")
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    (tmp_path / "live").mkdir()
+    (tmp_path / "live" / "live.log").write_text(LIVE_LOG)
+    app = AppTest.from_file(str(APP))
+    app.run(timeout=60)
+    assert not app.exception
+    text = " ".join(m.value for m in app.markdown)
+    # Verkauf 1,7 % unter dem Entscheidungskurs → Ausführungsfehler + Hypothese
+    assert "Ausführung gegen Plan" in text and "Ausführungsfehler (1/1)" in text
+    assert any("Ausführungsfehler" in str(d.value) for d in app.dataframe)
+
+
+def test_live_tab_shows_solana_shadow_copy(tmp_path, monkeypatch):
+    import json
+
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    (tmp_path / "copylive").mkdir()
+    (tmp_path / "copylive" / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "mode": "schatten",
+                "updated": "2026-10-18T12:00:00+00:00",
+                "start": "2026-10-18T11:00:00+00:00",
+                "capital_sol": 0.2,
+                "equity_sol": 0.21,
+                "cash_sol": 0.19,
+                "sol_eur": 92.0,
+                "leaders": ["L1aaaaaa"],
+                "holdings": [
+                    {
+                        "mint": "MINTxxxxxxxx",
+                        "leader": "L1aaaaaa",
+                        "since": "2026-10-18T11:30:00+00:00",
+                        "cost_sol": 0.02,
+                        "value_sol": 0.03,
+                        "units": 1,
+                    }
+                ],
+                "trades": [{"pnl_sol": 0.001}],
+                "feed": [
+                    {"ts": "2026-10-18T11:30:00+00:00", "text": "[SKIP] x – Freeze", "pnl": None}
+                ],
+                "curve": [["2026-10-18T11:00:00+00:00", 0.2], ["2026-10-18T12:00:00+00:00", 0.21]],
+            }
+        )
+    )
+    app = AppTest.from_file(str(APP))
+    app.run(timeout=60)
+    assert not app.exception
+    html = " ".join(m.value for m in app.markdown)
+    assert "SCHATTENBETRIEB" in html and "0.2100 SOL" in html and "1 abgelehnt" in html
+
+
+def test_goal_check_tab_renders_bot_overview(tmp_path, monkeypatch):
+    import json
+
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("TRADIKG_HOME", str(tmp_path))
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "copy_live.json").write_text(
+        json.dumps(
+            {
+                "capital": 100.0,
+                "balance": 92.5,
+                "pnl": -7.5,
+                "trades": 8,
+                "wins": 2,
+                "start": "2026-10-18T11:42:00+00:00",
+                "updated": "2026-10-18T14:00:00+00:00",
+            }
+        )
+    )
+    app = AppTest.from_file(str(APP))
+    app.run(timeout=60)
+    assert not app.exception
+    text = " ".join(m.value for m in app.markdown)
+    assert "Warum fast alles im Minus läuft" in text and "Empfehlung" in text
+    assert any("-7.5%" in d.value.get("Ergebnis", pd.Series()).tolist() for d in app.dataframe)

@@ -228,9 +228,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     from tradikg_bot.cli_platform import register as register_platform
     from tradikg_bot.cli_replay import register as register_replay
+    from tradikg_bot.copytrade.cli import register as register_copy
     from tradikg_bot.live.cli_kraken import register
+    from tradikg_bot.live.cli_live import register as register_live
 
     register(sub)
+    register_live(sub)
+    register_copy(sub)
     register_platform(sub)
     register_replay(sub)
     return parser

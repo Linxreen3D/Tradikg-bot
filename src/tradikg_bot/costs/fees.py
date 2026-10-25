@@ -126,10 +126,13 @@ CRYPTO_SPOT_DEFAULT = FeeModel(
     spread_bps=10.0,
     slippage_bps=5.0,
 )
-# Kraken-Pro-Spot-Grundstufe laut öffentlicher Gebührenübersicht (Taker 0.40 %), nicht
-# kontospezifisch verifiziert. Für Research, Paper und Live-Plausibilisierung dieselbe Annahme.
+# Kraken-Pro-Spot-Krypto, Stufe 1 (30-Tage-Volumen < 2.500 USD) laut öffentlicher
+# Gebührenseite kraken.com/features/fee-schedule, abgerufen 17.10.2026. Nicht kontospezifisch
+# verifiziert. Einzige Quelle für Research, Paper, Replay, Scanner und Live-Plausibilisierung.
+KRAKEN_SPOT_TAKER = 0.008  # 0,80 %
+KRAKEN_SPOT_MAKER = 0.004  # 0,40 %
 KRAKEN_SPOT_ASSUMED = FeeModel(
-    commission_rate=0.004,
+    commission_rate=KRAKEN_SPOT_TAKER,
     spread_bps=10.0,
     slippage_bps=5.0,
 )

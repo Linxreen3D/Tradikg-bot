@@ -11,6 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = sorted((ROOT / "scripts").glob("*.sh"))
+DEPLOY_SCRIPTS = sorted((ROOT / "deploy" / "linux").glob("*.sh"))
 REQUIRED = {
     "setup_mac.sh",
     "start_bot.sh",
@@ -19,7 +20,17 @@ REQUIRED = {
     "start_dashboard.sh",
     "run_tests.sh",
     "check_environment.sh",
+    "logs.sh",
 }
+
+
+def test_live_buy_now_defaults_to_the_same_20_eur_as_start_live():
+    buy = (ROOT / "scripts" / "live_buy_now.sh").read_text()
+    start = (ROOT / "scripts" / "start_live.sh").read_text()
+    assert 'BUDGET="${1:-20}"' in buy
+    assert 'BUDGET="${1:-20}"' in start
+    assert "19" not in buy
+    assert 'start_live.sh" "$BUDGET"' in buy
 
 
 def test_all_required_scripts_exist_and_are_executable():
@@ -30,7 +41,7 @@ def test_all_required_scripts_exist_and_are_executable():
             assert p.stat().st_mode & 0o111, f"{p.name} ist nicht ausführbar"
 
 
-@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("script", [*SCRIPTS, *DEPLOY_SCRIPTS], ids=lambda p: p.name)
 def test_bash_syntax(script):
     subprocess.run(["bash", "-n", str(script)], check=True)
 
@@ -38,14 +49,14 @@ def test_bash_syntax(script):
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck nicht installiert")
 def test_shellcheck_clean():
     subprocess.run(
-        ["shellcheck", "-x", "-P", "SCRIPTDIR", *map(str, SCRIPTS)],
+        ["shellcheck", "-x", "-P", "SCRIPTDIR", *map(str, [*SCRIPTS, *DEPLOY_SCRIPTS])],
         check=True,
         cwd=ROOT / "scripts",
     )
 
 
 def test_scripts_never_delete_trading_data_or_go_live():
-    for p in SCRIPTS:
+    for p in [*SCRIPTS, *DEPLOY_SCRIPTS]:
         text = p.read_text()
         assert "rm -rf" not in text
         assert "live-trade" not in text and "TRADIKG_LIVE_APPROVAL" not in text

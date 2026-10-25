@@ -3,9 +3,14 @@ from __future__ import annotations
 import pandas as pd
 
 from tradikg_bot.costs import FeeModel
+from tradikg_bot.live.models import FeeRates
 from tradikg_bot.strategies.base import Strategy, empty_signals
 
 ZERO_FEES = FeeModel()
+# Mechanik-Tests (Ablauf, OCO, Neustart …) mit fester Gebühr, damit ihre Szenarien nicht an
+# der Gebührenannahme hängen. Die echte Annahme prüft tests/test_fees.py.
+MECHANICS_FEES = FeeRates(0.004, 0.0025, "Test: Mechanik")
+MECHANICS_FEE_MODEL = FeeModel(commission_rate=0.004, spread_bps=10.0, slippage_bps=5.0)
 
 
 class ScriptedStrategy(Strategy):

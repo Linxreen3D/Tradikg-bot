@@ -445,6 +445,23 @@ def max_drawdown(values: pd.Series | np.ndarray, start: float) -> float:
     return float((arr / peak - 1).min())
 
 
+def weekly_stats(equity: pd.Series, start: float) -> dict[str, float | int]:
+    """Wochenbilanz (Montag–Sonntag, UTC) einer Equity-Kurve: Ziel „wöchentlich im Plus“ messbar.
+
+    Eine Woche ohne Veränderung (z. B. ohne Trades) zählt **nicht** als Plus.
+    """
+    weekly = equity.astype(float).resample("W-SUN").last().dropna()
+    if weekly.empty:
+        return {"weeks": 0, "positive_share": 0.0, "worst_week": 0.0, "median_week": 0.0}
+    rets = pd.concat([pd.Series([start]), weekly.reset_index(drop=True)]).pct_change().dropna()
+    return {
+        "weeks": len(rets),
+        "positive_share": float((rets > 1e-9).mean()),
+        "worst_week": float(rets.min()),
+        "median_week": float(rets.median()),
+    }
+
+
 def _reason_key(text: str | None) -> str:
     text = re.sub(r"[-+]?\d[\d.,]*", "#", text or "unbekannt")
     return text[:140]

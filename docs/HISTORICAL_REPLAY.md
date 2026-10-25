@@ -11,6 +11,7 @@ Bot auf den Daten zu bewerten, auf denen er trainiert oder optimiert wurde.
 | Quelle | Abdeckung | Befehl | Hinweis |
 |---|---|---|---|
 | Kraken-REST `OHLC` | höchstens **720 Kerzen** je Intervall: 1d ≈ 2 Jahre, 4h ≈ 120 Tage, 1h ≈ 30 Tage | `tradikg data fetch-kraken --timeframe 1d` | offiziell, ohne Schlüssel; ältere Kerzen liefert die API nicht |
+| Kraken-Komplettarchiv per HTTP-Range | vollständige Historie (z. B. XBTEUR 1d seit 2013), nur die gewünschten CSVs (~16 MB statt 9,5 GB) | `tradikg data fetch-kraken-full --timeframes 1d,4h,1h` | offiziell; liest per Range-Anfrage nur Verzeichnis und gewählte Dateien aus den 5 Archivteilen |
 | Kraken „Downloadable historical OHLCVT“ | vollständige Historie je Paar, 1m–1d | `tradikg data import-kraken <ZIP oder Ordner> --timeframe 1d` | offiziell, Download manuell im Kraken-Support-Center (ZIP); CSV ohne Kopfzeile: `timestamp, open, high, low, close, volume, trades`; Intervalle ohne Handel fehlen |
 | ccxt (z. B. Binance) | lange Historie über Paginierung | `tradikg data fetch-ccxt --symbol BTC/EUR --as XBTEUR` | **andere Börse** – Preise/Volumen weichen ab; Quelle wird im Bericht ausgewiesen (`pip install -e ".[data]"`) |
 
@@ -66,7 +67,7 @@ Der Bericht liegt unter `~/.tradikg/reports/replay-<Nr>.md`, alle Zahlen in
 Das Replay nutzt dieselbe `PaperTradingEngine`: Signal zur Schlusskerze, Ausführung
 zur Eröffnung der Folgekerze, Netto-EV-Filter mit OOS-Wahrscheinlichkeiten,
 Positionsgröße über das Risiko je Trade, Mindestvolumen/-wert und Tick-Raster,
-Gebühren (0,40 % Taker / 0,25 % Maker, Annahme), Spread (10 bps), Einstiegs- und
+Gebühren (0,80 % Taker / 0,40 % Maker, Kraken-Pro-Stufe 1, Stand 17.10.2026), Spread (10 bps), Einstiegs- und
 Stop-Slippage, SL/TP je Kerze, Cooldowns, Tagesverlust-Abschaltschwelle und Ledger.
 
 **SL und TP in derselben Kerze:** Die Reihenfolge ist aus OHLC nicht bestimmbar. Der

@@ -21,6 +21,13 @@ from pathlib import Path
 from typing import Any
 
 from tradikg_bot.config import LiveTradingNotAllowedError, _reject_secrets
+from tradikg_bot.risk.limits import (
+    TREND_DAILY_LOSS_FRACTION,
+    TREND_DAILY_LOSS_TIMEZONE,
+    TREND_DRAWDOWN_FRACTION,
+    validate_trend_daily_loss,
+    validate_trend_drawdown,
+)
 
 DEFAULT_HOME = Path("~/.tradikg")
 
@@ -40,6 +47,16 @@ class PlatformConfig:
     log_level: str = "INFO"
     dashboard_port: int = 8501
     local_llm_enabled: bool = False  # optional, standardmäßig aus; nicht implementiert
+    strategy_mode: str = "signals"  # signals = Bracket, trend = 200-Tage-Allokation, grid = Netz
+    invest_fraction: float = 1.0  # trend: höchstens investierter Kapitalanteil (Risikoregler)
+    cash_yield_pa: float = 0.0  # trend: Zins auf Cash, nur wenn er tatsächlich gezahlt wird
+    # Trend-Tagesverlustgrenze. Aus = bisheriges Verhalten. Höchstens 10 %, Standard 5 %.
+    daily_loss_enabled: bool = False
+    daily_loss_fraction: float = TREND_DAILY_LOSS_FRACTION
+    daily_loss_timezone: str = TREND_DAILY_LOSS_TIMEZONE
+    # Trend-Drawdown vom Equity-Höchststand. Aus = bisheriges Verhalten. Höchstens 45 %.
+    drawdown_enabled: bool = False
+    drawdown_fraction: float = TREND_DRAWDOWN_FRACTION
     home: Path = field(default=DEFAULT_HOME)
 
     def __post_init__(self) -> None:
@@ -47,10 +64,18 @@ class PlatformConfig:
             raise LiveTradingNotAllowedError(
                 f"Modus '{self.mode}' ist gesperrt – die Plattform läuft nur im Paper-Modus."
             )
+        if self.strategy_mode not in ("signals", "trend", "grid"):
+            raise ValueError("strategy_mode muss 'signals', 'trend' oder 'grid' sein")
+        if not 0 < self.invest_fraction <= 1:
+            raise ValueError("invest_fraction muss in (0, 1] liegen")
+        if not 0 <= self.cash_yield_pa < 0.2:
+            raise ValueError("cash_yield_pa muss in [0, 0.2) liegen")
         if self.capital_eur <= 0:
             raise ValueError("capital_eur muss > 0 sein")
         if not 0 <= self.tax_rate < 1:
             raise ValueError("tax_rate muss in [0, 1) liegen")
+        validate_trend_daily_loss(self.daily_loss_fraction, self.daily_loss_timezone)
+        validate_trend_drawdown(self.drawdown_fraction)
         object.__setattr__(self, "home", Path(self.home).expanduser())
 
     # -- Pfade -------------------------------------------------------------------------------
@@ -152,4 +177,12 @@ tax_rate = 0.0              # Steuerrücklage (keine steuerliche Beratung)
 log_level = "INFO"
 dashboard_port = 8501
 local_llm_enabled = false   # optional, nicht implementiert
+strategy_mode = "signals"   # "trend" = 200-Tage-Allokation (für 1d gedacht)
+invest_fraction = 1.0       # trend: max. investierter Anteil (0.5 = halbes Risiko)
+cash_yield_pa = 0.0         # trend: Zins auf Cash (nur wenn real gezahlt)
+daily_loss_enabled = false  # trend: Tagesverlustgrenze (5 %, 00:00 Europe/Vienna). Aus = wie bisher
+daily_loss_fraction = 0.05  # höchstens 0.10, nur enger. ~1 € an einem 20-€-Konto
+daily_loss_timezone = "Europe/Vienna"
+drawdown_enabled = false   # trend: Sperre bei −45 % vom Equity-Höchststand. Aus = wie bisher
+drawdown_fraction = 0.45   # höchstens 0.45, nur enger. −30 % hätte den Trend 2019 beendet
 """
